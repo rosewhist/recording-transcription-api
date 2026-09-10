@@ -1,0 +1,57 @@
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    """应用配置：默认值在此定义；可用 .env / 环境变量覆盖同名字段。"""
+
+    # ---- App ----
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8000
+    DEBUG: bool = False
+    LOG_DIR: str = str(_ROOT / "logs")
+    LOG_LEVEL: str = "INFO"
+    LOG_MAX_BYTES: int = 10_485_760
+    LOG_BACKUP_COUNT: int = 5
+
+    # ---- Database ----
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/recording_transcription"
+    POOL_SIZE: int = 10
+    POOL_TIMEOUT: float = 10.0
+
+    # ---- 上传 ----
+    UPLOAD_DIR: str = str(_ROOT / "uploads")
+    MAX_FILE_SIZE_MB: int = 50
+    ALLOWED_EXTENSIONS: str = "wav,mp3,m4a,aac"
+
+    # ---- LLM 摘要 ----
+    LLM_PROVIDER: str = "openai_compatible"
+    LLM_BASE_URL: str = "https://api.deepseek.com/v1"
+    LLM_API_KEY: str = ""
+    LLM_MODEL: str = "deepseek-chat"
+    LLM_TIMEOUT_SECONDS: float = 30.0
+    LLM_MAX_TOKENS: int = 512
+
+    model_config = SettingsConfigDict(
+        env_file=_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # ---- 派生配置 ----
+    @property
+    def allowed_ext_set(self) -> set[str]:
+        return {f".{e.strip().lower().lstrip('.')}" for e in self.ALLOWED_EXTENSIONS.split(",") if e.strip()}
+
+    @property
+    def max_file_size_bytes(self) -> int:
+        return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
