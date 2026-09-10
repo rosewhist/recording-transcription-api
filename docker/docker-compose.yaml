@@ -1,0 +1,50 @@
+# 在仓库根目录执行：
+#   docker compose -f docker/docker-compose.yaml up --build
+# 或在 docker/ 目录执行：
+#   docker compose up --build
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: recording-transcription-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: recording_transcription
+    ports:
+      # 宿主机 5432 常被占用时改用 5433；容器内仍是 5432（api 服务用 db:5432）
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d recording_transcription"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    container_name: recording-transcription-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db:5432/recording_transcription"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+    volumes:
+      - ../uploads:/app/uploads
+      - ../logs:/app/logs
+
+volumes:
+  postgres_data:

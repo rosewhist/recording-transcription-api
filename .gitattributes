@@ -1,0 +1,37 @@
+# Normalize text files; let Git decide binary vs text
+* text=auto eol=lf
+
+# Source / config
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.http text eol=lf
+Dockerfile text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.env.example text eol=lf
+
+# Windows scripts keep CRLF when checked out on Windows
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary / media
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.wav binary
+*.mp3 binary
+*.m4a binary
+*.aac binary
+*.zip binary
+*.gz binary
+*.7z binary
