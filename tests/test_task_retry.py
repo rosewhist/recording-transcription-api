@@ -78,25 +78,34 @@ async def test_retry_failed_requeues_and_submits(
 
 
 @pytest.mark.asyncio
-async def test_retry_idempotent_when_already_pending(
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.PENDING,
+        TaskStatus.TRANSCRIBING,
+        TaskStatus.SUMMARIZING,
+    ],
+)
+async def test_retry_idempotent_when_already_recoverable(
     client: AsyncClient,
     mock_task_repo: MagicMock,
     mock_worker: MagicMock,
+    status: TaskStatus,
 ):
     task_id = uuid4()
-    pending = Task(
+    current = Task(
         id=task_id,
         recording_id=uuid4(),
-        status=TaskStatus.PENDING.value,
+        status=status.value,
         retry_count=0,
     )
     mock_task_repo.requeue_failed = AsyncMock(return_value=None)
-    mock_task_repo.get_by_id = AsyncMock(return_value=pending)
+    mock_task_repo.get_by_id = AsyncMock(return_value=current)
 
     resp = await client.post(f"/v1/tasks/{task_id}/retry")
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == TaskStatus.PENDING.value
+    assert resp.json()["status"] == status.value
     mock_worker.submit.assert_not_called()
 
 
