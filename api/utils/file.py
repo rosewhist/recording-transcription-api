@@ -1,4 +1,4 @@
-"""上传文件读写等工具（后续实现）。"""
+"""上传文件校验、哈希与本地磁盘读写。"""
 import asyncio
 import hashlib
 import os

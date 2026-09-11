@@ -6,16 +6,16 @@
 GET {{baseUrl}}/health
 
 ### 上传录音（Postman：Body → form-data → key=file, type=File）
-# 测试文件：testdata/demo.wav | demo2.wav | short.wav
+# 测试文件：testdata/short.wav（仓库内样例，约 0.1s）
 # @name upload
 POST {{baseUrl}}/v1/recordings
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
-Content-Disposition: form-data; name="file"; filename="demo.wav"
+Content-Disposition: form-data; name="file"; filename="short.wav"
 Content-Type: audio/wav
 
-< ./testdata/demo.wav
+< ./testdata/short.wav
 ------Boundary--
 
 ### 从上传响应取出 id

@@ -9,8 +9,8 @@
 ```bash
 # 仓库根目录
 cp .env.example .env
-# 可选：填写 LLM_API_KEY（DeepSeek 等 OpenAI 兼容接口）
-# 未填写时 compose 默认开启 WORKER_ALLOW_MOCK_LLM=true，便于本地跑通流水线
+# 评分/演示请填写 LLM_API_KEY（DeepSeek 等 OpenAI 兼容接口）——有 Key 时走真实摘要
+# 未填写时 compose 默认 WORKER_ALLOW_MOCK_LLM=true，仅用于无 Key 一键跑通（此项会降分）
 
 docker compose -f docker/docker-compose.yaml up --build
 ```
@@ -27,6 +27,8 @@ docker compose -f docker/docker-compose.yaml down
 
 ### 本地开发（不用 Docker 跑 API）
 
+依赖：Python 3.9+（Docker 镜像为 3.12）。
+
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -35,17 +37,20 @@ pip install -r requirements.txt
 cp .env.example .env
 # 启动 Postgres（可用上面的 compose 只起 db）后设置 DATABASE_URL
 # DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/recording_transcription
+# 填写 LLM_API_KEY 后摘要走真实 LLM；不填则需 WORKER_ALLOW_MOCK_LLM=true
 
 alembic upgrade head
 uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-单元测试：
+单元测试（HTTP 接口 + 状态机 / Worker，不连真实 DB / LLM）：
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -v
 ```
+
+接口调试：导入根目录 [`api.http`](api.http)，上传样例为 [`testdata/short.wav`](testdata/short.wav)。
 
 ## 架构说明
 
@@ -127,12 +132,12 @@ data: {"message":"..."}
 ## 技术取舍
 
 - **ASR**：按题目要求 Mock（随机 5~15s，约 20% 失败），未接真实 ASR。
-- **LLM**：OpenAI 兼容 Chat Completions（默认 DeepSeek）；强制 JSON + 多层解析兜底 + 超时/限流/5xx 重试。无 Key 时可用 `WORKER_ALLOW_MOCK_LLM=true`（得分会按题目说明降低）。SSE 与 worker 共用同一套摘要能力。
+- **LLM**：OpenAI 兼容 Chat Completions（默认 DeepSeek）；强制 JSON + 多层解析兜底 + 超时/限流/5xx 重试。配置 `LLM_API_KEY` 后 worker 与 SSE 均走真实模型。无 Key 时 compose 默认 `WORKER_ALLOW_MOCK_LLM=true` 仅作占位摘要（题目说明此项会降分）。
 - **队列**：DB 状态 + `SKIP LOCKED` 抢占，免额外部署 Redis。
 - **并发**：`WORKER_MAX_CONCURRENCY`（默认 3）。
 - **上传幂等**：基于文件 SHA-256 去重。
 - **日志**：关键路径 INFO/WARNING/ERROR；上传后绑定 `task-{id}`，可用 `X-Request-ID` / `task_id` 串生命周期。
-- **测试**：`tests/` 下对核心 HTTP 接口做单元测试（mock 仓储/服务）。
+- **测试**：`tests/` 覆盖核心 HTTP 接口（mock 仓储）以及 Worker 状态机（mock ASR/LLM，不等待 5~15s）。
 
 ## 已完成的加分项
 
@@ -141,7 +146,7 @@ data: {"message":"..."}
 - LLM SSE 流式摘要
 - 上传哈希幂等
 - Worker 并发上限
-- 核心接口单元测试
+- 核心接口与状态机单元测试
 
 ## 环境变量（常用）
 
@@ -150,8 +155,8 @@ data: {"message":"..."}
 | 变量 | 说明 |
 |------|------|
 | `DATABASE_URL` | `postgresql+asyncpg://...` |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 摘要模型 |
-| `WORKER_ALLOW_MOCK_LLM` | 无 Key 时占位摘要（含 SSE mock 流） |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 摘要模型；**有 Key 即走真实 LLM** |
+| `WORKER_ALLOW_MOCK_LLM` | 仅无 Key 时的占位摘要（含 SSE mock 流）；有 Key 时忽略 |
 | `WORKER_MAX_CONCURRENCY` / `WORKER_LEASE_SECONDS` | 并发与租约 |
 | `LOG_JSON` / `LOG_LEVEL` | 日志 |
 
@@ -175,7 +180,8 @@ api/
   worker/             # dispatcher / executor / common
   core/               # db / logger / llm / errors
   schema/             # 响应模型
-tests/                # pytest 单元测试
+tests/                # pytest 单元测试（接口 + 状态机）
+testdata/short.wav    # api.http 上传样例
 alembic/              # 迁移
 docker/               # compose
 api.http              # 接口调试

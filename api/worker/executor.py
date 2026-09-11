@@ -184,6 +184,7 @@ class TaskExecutor:
 
     async def _await_while_leased(self, coro, lease_lost: asyncio.Event):
         if lease_lost.is_set():
+            coro.close()
             raise LeaseLostError("lease already lost")
 
         work = asyncio.create_task(coro)

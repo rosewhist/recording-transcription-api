@@ -49,7 +49,8 @@ services:
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
       LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
-      # 无 Key 时默认 Mock 摘要，保证一键启动可跑通；有 Key 时可在 .env 设为 false
+      # 无 Key 时默认 Mock 摘要，保证一键启动可跑通（有 Key 时 worker 仍走真实 LLM）
+      # 评分请在仓库根 .env 填写 LLM_API_KEY
       WORKER_ALLOW_MOCK_LLM: "${WORKER_ALLOW_MOCK_LLM:-true}"
       WORKER_MAX_CONCURRENCY: "${WORKER_MAX_CONCURRENCY:-3}"
       WORKER_LEASE_SECONDS: "${WORKER_LEASE_SECONDS:-300}"
