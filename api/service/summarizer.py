@@ -1,7 +1,7 @@
 """Thin service wrapper around ``LLMSummarizer`` for workers and business logic."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from api.config.settings import Settings, get_settings
 from api.core.llm import LLMSummarizer, SummaryResult
@@ -31,6 +31,13 @@ class SummarizerService:
             self._owns_summarizer = True
         return self._summarizer
 
+    @property
+    def can_stream(self) -> bool:
+        """True if real LLM or mock stream is available."""
+        if self._summarizer is not None or self.settings.LLM_API_KEY:
+            return True
+        return bool(self.settings.WORKER_ALLOW_MOCK_LLM)
+
     async def summarize(self, transcript: str) -> dict[str, Any]:
         """Return summary as a plain dict."""
         return await self.summarizer.summarize(transcript)
@@ -38,6 +45,20 @@ class SummarizerService:
     async def summarize_model(self, transcript: str) -> SummaryResult:
         """Return a validated ``SummaryResult`` model."""
         return await self.summarizer.summarize_model(transcript)
+
+    async def summarize_stream(
+        self, transcript: str
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Yield (event, payload) for SSE: delta / done / error."""
+        if self._summarizer is not None or self.settings.LLM_API_KEY:
+            async for item in self.summarizer.summarize_stream(transcript):
+                yield item
+            return
+        if self.settings.WORKER_ALLOW_MOCK_LLM:
+            async for item in LLMSummarizer.mock_summarize_stream():
+                yield item
+            return
+        yield ("error", "LLM is not configured")
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client if this service owns it."""

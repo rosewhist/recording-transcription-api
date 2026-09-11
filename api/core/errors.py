@@ -14,6 +14,7 @@ from api.domain.exceptions import (
     InvalidRequestError,
     InvalidUploadError,
     RecordingNotFoundError,
+    ServiceUnavailableError,
     TaskNotFoundError,
     TaskNotRetryableError,
 )
@@ -63,6 +64,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(TaskNotRetryableError)
     async def task_not_retryable(_request: Request, exc: TaskNotRetryableError):
         return _error_json(409, "task_not_retryable", str(exc))
+
+    @app.exception_handler(ServiceUnavailableError)
+    async def service_unavailable(_request: Request, exc: ServiceUnavailableError):
+        return _error_json(503, "service_unavailable", str(exc))
 
     @app.exception_handler(AppError)
     async def app_error(_request: Request, exc: AppError):

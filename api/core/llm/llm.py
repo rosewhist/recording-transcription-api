@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from openai import (
     APIConnectionError,
@@ -113,13 +113,7 @@ class LLMSummarizer:
             raise ValueError("transcript must not be empty")
 
         # Prompts stay Chinese: product targets Chinese meeting transcripts.
-        system_prompt = (
-            "你是一个专业的会议/录音摘要助手。"
-            "你必须以纯 JSON 格式返回结果，不要包含任何其他文字（如 Markdown 代码块）。"
-            "JSON 结构必须严格遵循："
-            '{"summary": "一句话摘要", "key_points": ["要点1", "要点2"], "todos": ["待办1"]}'
-        )
-        user_prompt = f"请对以下录音转写文本进行摘要和待办提取：\n\n{transcript}"
+        system_prompt, user_prompt = self._summary_prompts(transcript)
 
         last_exception: Optional[BaseException] = None
 
@@ -193,6 +187,92 @@ class LLMSummarizer:
         raise RuntimeError(
             f"LLM summarize failed after {self.max_retries} retries: {last_exception}"
         ) from last_exception
+
+    async def summarize_stream(
+        self, transcript: str
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Stream summary generation as (event, payload) pairs.
+
+        Yields:
+          - ``("delta", text_chunk)``
+          - ``("done", summary_dict)`` on success
+          - ``("error", message)`` on failure (then stops)
+        """
+        if not transcript or not transcript.strip():
+            yield ("error", "transcript must not be empty")
+            return
+
+        system_prompt, user_prompt = self._summary_prompts(transcript)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+
+        parts: list[str] = []
+        try:
+            stream = await self.client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                text = getattr(delta, "content", None) or ""
+                if not text:
+                    continue
+                parts.append(text)
+                yield ("delta", text)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("LLM summarize_stream failed")
+            yield ("error", f"LLM stream failed: {e}")
+            return
+
+        raw = "".join(parts).strip()
+        if not raw:
+            yield ("error", "LLM returned empty stream content")
+            return
+        try:
+            result_dict = self._parse_json_safely(raw)
+            validated = SummaryResult.model_validate(result_dict)
+            yield ("done", validated.model_dump())
+        except (LLMParseError, ValidationError) as e:
+            yield ("error", f"Failed to parse streamed summary: {e}")
+
+    @staticmethod
+    def _summary_prompts(transcript: str) -> tuple[str, str]:
+        system_prompt = (
+            "你是一个专业的会议/录音摘要助手。"
+            "你必须以纯 JSON 格式返回结果，不要包含任何其他文字（如 Markdown 代码块）。"
+            "JSON 结构必须严格遵循："
+            '{"summary": "一句话摘要", "key_points": ["要点1", "要点2"], "todos": ["待办1"]}'
+        )
+        user_prompt = f"请对以下录音转写文本进行摘要和待办提取：\n\n{transcript}"
+        return system_prompt, user_prompt
+
+    @staticmethod
+    async def mock_summarize_stream(
+        *,
+        chunk_size: int = 8,
+        delay_seconds: float = 0.02,
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Pseudo-stream a fixed JSON summary (for WORKER_ALLOW_MOCK_LLM)."""
+        payload = {
+            "summary": "模拟摘要",
+            "key_points": ["要点1"],
+            "todos": ["待办1"],
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        for i in range(0, len(raw), chunk_size):
+            piece = raw[i : i + chunk_size]
+            yield ("delta", piece)
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+        yield ("done", payload)
 
     def _backoff_delay(self, attempt: int) -> float:
         """Exponential backoff: base, 2*base, 4*base, ..."""

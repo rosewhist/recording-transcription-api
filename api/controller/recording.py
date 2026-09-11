@@ -1,10 +1,12 @@
-"""录音路由：上传 / 列表 / 详情 / 删除。"""
+"""录音路由：上传 / 列表 / 详情 / 删除 / 摘要 SSE。"""
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from typing import Annotated, Any, AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, File, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Query, Request, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from api.depends import RecordingServiceDep
 from api.schema.recording import (
@@ -17,6 +19,11 @@ from api.schema.recording import (
 )
 
 router = APIRouter(tags=["recordings"])
+
+
+def _sse_pack(event: str, data: Any) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 @router.post("/recordings", response_model=RecordingUploadResponse)
@@ -40,6 +47,42 @@ async def list_recordings(
     """录音列表：按创建时间倒序，含每条最新任务状态。"""
     items, total = await service.list_recordings(page=page, page_size=page_size)
     return to_list_response(items, page=page, page_size=page_size, total=total)
+
+
+@router.get("/recordings/{recording_id}/summary/stream")
+async def stream_recording_summary(
+    recording_id: UUID,
+    request: Request,
+    service: RecordingServiceDep,
+):
+    """以 SSE 流式返回摘要生成过程（不写库）。"""
+    # Raise 404/400/503 before headers are flushed.
+    transcript = await service.prepare_summary_stream(recording_id)
+    summarizer = service.summarizer
+    assert summarizer is not None
+
+    async def event_source() -> AsyncIterator[str]:
+        async for name, payload in summarizer.summarize_stream(transcript):
+            if await request.is_disconnected():
+                break
+            if name == "delta":
+                yield _sse_pack("delta", {"text": payload})
+            elif name == "done":
+                yield _sse_pack("done", payload)
+            elif name == "error":
+                yield _sse_pack("error", {"message": str(payload)})
+            else:
+                yield _sse_pack(name, payload)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/recordings/{recording_id}", response_model=RecordingDetailResponse)

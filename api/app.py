@@ -28,23 +28,30 @@ async def lifespan(app: FastAPI):
     run_migrations()
 
     # LLM_API_KEY 未配置时：除非 WORKER_ALLOW_MOCK_LLM=true，否则摘要阶段会失败重试
-    summarizer = None
-    if settings.LLM_API_KEY:
-        from api.service.summarizer import SummarizerService
+    from api.service.summarizer import SummarizerService
 
-        summarizer = SummarizerService(settings=settings)
+    worker_summarizer = None
+    if settings.LLM_API_KEY:
+        worker_summarizer = SummarizerService(settings=settings)
+    # HTTP SSE 始终持有 SummarizerService（无 key 时可走 mock）
+    http_summarizer = worker_summarizer or SummarizerService(settings=settings)
 
     worker = TaskWorker(
-        summarizer=summarizer,
+        summarizer=worker_summarizer,
         transcriber=TranscriberService(),
         settings=settings,
     )
     await worker.start()
 
     recording_repo = RecordingRepository()
-    app.state.recording_service = RecordingService(repo=recording_repo, worker=worker)
+    app.state.recording_service = RecordingService(
+        repo=recording_repo,
+        worker=worker,
+        summarizer=http_summarizer,
+    )
     app.state.task_service = TaskService(repo=TaskRepository(), worker=worker)
     app.state.worker = worker
+    app.state.summarizer = http_summarizer
 
     yield
 

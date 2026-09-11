@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, AsyncIterator, Optional
 from uuid import UUID
 
 from fastapi import UploadFile
@@ -11,10 +11,12 @@ from api.core.logger import bind_task_trace, get_logger, trace_id_var
 from api.domain.exceptions import (
     InvalidRequestError,
     RecordingNotFoundError,
+    ServiceUnavailableError,
     TaskNotFoundError,
 )
 from api.repository.dao import Recording, Task
 from api.repository.recording import RecordingRepository
+from api.service.summarizer import SummarizerService
 from api.utils import file as file_utils
 from api.worker import TaskWorker
 
@@ -45,9 +47,15 @@ def _bind_task_for_logs(task: Task) -> None:
 
 
 class RecordingService:
-    def __init__(self, repo: RecordingRepository, worker: Optional[TaskWorker] = None):
+    def __init__(
+        self,
+        repo: RecordingRepository,
+        worker: Optional[TaskWorker] = None,
+        summarizer: Optional[SummarizerService] = None,
+    ):
         self.repo = repo
         self.worker = worker
+        self.summarizer = summarizer
         self.settings: Settings = get_settings()
 
     async def upload(self, upload_file: UploadFile) -> tuple[Recording, Task, bool]:
@@ -165,3 +173,33 @@ class RecordingService:
                 recording_id,
                 file_path,
             )
+
+    async def prepare_summary_stream(self, recording_id: UUID) -> str:
+        """Validate recording/task/LLM; return transcript for streaming."""
+        recording, task = await self.repo.get_by_id(recording_id)
+        if recording is None:
+            raise RecordingNotFoundError(f"录音不存在: {recording_id}")
+        task = _require_task(task)
+        transcript = (task.transcript or "").strip()
+        if not transcript:
+            raise InvalidRequestError("尚无转写文本，无法流式摘要")
+        if self.summarizer is None or not self.summarizer.can_stream:
+            raise ServiceUnavailableError(
+                "未配置 LLM_API_KEY，且 WORKER_ALLOW_MOCK_LLM=false，无法流式摘要"
+            )
+        logger.info(
+            "开始流式摘要，recording_id=%s，task_id=%s，transcript_chars=%s",
+            recording.id,
+            task.id,
+            len(transcript),
+        )
+        return transcript
+
+    async def stream_summary(
+        self, recording_id: UUID
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Yield SSE event payloads for summary generation (does not write DB)."""
+        transcript = await self.prepare_summary_stream(recording_id)
+        assert self.summarizer is not None
+        async for event in self.summarizer.summarize_stream(transcript):
+            yield event

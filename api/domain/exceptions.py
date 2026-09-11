@@ -23,3 +23,7 @@ class TaskNotFoundError(AppError):
 
 class TaskNotRetryableError(AppError):
     """任务当前状态不可重试。"""
+
+
+class ServiceUnavailableError(AppError):
+    """依赖服务不可用（如未配置 LLM）。"""
