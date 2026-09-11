@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from logging.config import fileConfig
 
 from alembic import context
@@ -17,8 +18,10 @@ import api.repository.dao  # noqa: F401
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# CLI 单独跑 alembic 时配置控制台日志；应用 lifespan 内已 setup_logging，
+# 再 fileConfig 会覆盖 root 并默认 disable_existing_loggers=True，导致启动后无日志。
+if config.config_file_name is not None and not logging.root.handlers:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = SQLModel.metadata
 

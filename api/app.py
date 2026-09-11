@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -25,7 +26,8 @@ async def lifespan(app: FastAPI):
     Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
     Path(settings.LOG_DIR).mkdir(parents=True, exist_ok=True)
 
-    run_migrations()
+    # Alembic async env uses asyncio.run(); must not run on uvicorn's loop
+    await asyncio.to_thread(run_migrations)
 
     # LLM_API_KEY 未配置时：除非 WORKER_ALLOW_MOCK_LLM=true，否则摘要阶段会失败重试
     from api.service.summarizer import SummarizerService
