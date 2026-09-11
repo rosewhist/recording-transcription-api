@@ -42,6 +42,10 @@ services:
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
       LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+      # 无 Key 时默认 Mock 摘要，保证一键启动可跑通；有 Key 时可在 .env 设为 false
+      WORKER_ALLOW_MOCK_LLM: "${WORKER_ALLOW_MOCK_LLM:-true}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      LOG_JSON: "${LOG_JSON:-true}"
     volumes:
       - ../uploads:/app/uploads
       - ../logs:/app/logs

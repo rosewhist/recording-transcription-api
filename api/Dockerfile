@@ -20,6 +20,8 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+COPY alembic.ini .
+COPY alembic ./alembic
 COPY api ./api
 
 RUN mkdir -p /app/logs /app/uploads \
@@ -30,5 +32,4 @@ USER appuser
 
 EXPOSE 8000
 
-# 注意：需 api.app:app 已定义；当前 api/app.py 为空时容器会启动失败
 CMD ["sh", "-c", "exec uvicorn api.app:app --host ${API_HOST} --port ${API_PORT}"]
