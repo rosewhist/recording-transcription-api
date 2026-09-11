@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -69,6 +70,16 @@ class RecordingRepository:
     ) -> tuple[Optional[Recording], Optional[Task]]:
         async with _session() as session:
             return await _by_hash(session, file_hash)
+
+    async def get_by_id(
+        self, recording_id: UUID
+    ) -> tuple[Optional[Recording], Optional[Task]]:
+        async with _session() as session:
+            recording = await RecordingDao(session).get_by_id(recording_id)
+            if recording is None:
+                return None, None
+            task = await TaskDao(session).get_by_recording(recording.id)
+            return recording, task
 
     async def list_page(
         self, *, page: int, page_size: int

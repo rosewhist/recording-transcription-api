@@ -1,14 +1,17 @@
-"""录音路由：上传 / 列表（详情/删除后续再挂）。"""
+"""录音路由：上传 / 列表 / 详情（删除后续再挂）。"""
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, File, Query, Response, UploadFile, status
 
 from api.depends import RecordingServiceDep
 from api.schema.recording import (
+    RecordingDetailResponse,
     RecordingListResponse,
     RecordingUploadResponse,
+    to_detail_response,
     to_list_response,
     to_upload_response,
 )
@@ -37,3 +40,10 @@ async def list_recordings(
     """录音列表：按创建时间倒序，含每条最新任务状态。"""
     items, total = await service.list_recordings(page=page, page_size=page_size)
     return to_list_response(items, page=page, page_size=page_size, total=total)
+
+
+@router.get("/recordings/{recording_id}", response_model=RecordingDetailResponse)
+async def get_recording(recording_id: UUID, service: RecordingServiceDep):
+    """录音详情：处理完成时包含 transcript 与摘要结果。"""
+    recording, task = await service.get_recording(recording_id)
+    return to_detail_response(recording, task)

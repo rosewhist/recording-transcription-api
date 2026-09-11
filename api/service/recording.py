@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+from uuid import UUID
 
 from fastapi import UploadFile
 
 from api.config.settings import Settings, get_settings
 from api.core.logger import bind_task_trace, get_logger, trace_id_var
-from api.domain.exceptions import InvalidRequestError, TaskNotFoundError
+from api.domain.exceptions import (
+    InvalidRequestError,
+    RecordingNotFoundError,
+    TaskNotFoundError,
+)
 from api.repository.dao import Recording, Task
 from api.repository.recording import RecordingRepository
 from api.utils import file as file_utils
@@ -127,3 +132,16 @@ class RecordingService:
             len(items),
         )
         return items, total
+
+    async def get_recording(self, recording_id: UUID) -> tuple[Recording, Task]:
+        recording, task = await self.repo.get_by_id(recording_id)
+        if recording is None:
+            raise RecordingNotFoundError(f"录音不存在: {recording_id}")
+        task = _require_task(task)
+        logger.info(
+            "查询录音详情，recording_id=%s，task_id=%s，status=%s",
+            recording.id,
+            task.id,
+            task.status,
+        )
+        return recording, task
