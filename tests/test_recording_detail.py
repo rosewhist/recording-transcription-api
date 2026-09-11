@@ -72,7 +72,11 @@ async def test_get_recording_done_includes_results(
     body = resp.json()
     assert body["status"] == TaskStatus.DONE.value
     assert body["transcript"] == "hello world"
-    assert body["summary"]["summary"] == "一句话"
+    assert body["summary"] == {
+        "summary": "一句话",
+        "key_points": ["a"],
+        "todos": [],
+    }
 
 
 @pytest.mark.asyncio
