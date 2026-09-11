@@ -29,3 +29,6 @@ GET {{baseUrl}}/v1/recordings?page=1&page_size=20
 
 ### 录音详情（done 时含 transcript 与 summary）
 GET {{baseUrl}}/v1/recordings/{{recordingId}}
+
+### 失败任务重试（仅 failed；重复请求幂等）
+POST {{baseUrl}}/v1/tasks/{{taskId}}/retry

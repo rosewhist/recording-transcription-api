@@ -1,4 +1,4 @@
-"""任务路由：查询"""
+"""任务路由：查询 / 重试。"""
 from __future__ import annotations
 
 from uuid import UUID
@@ -15,4 +15,11 @@ router = APIRouter(tags=["tasks"])
 async def get_task(task_id: UUID, service: TaskServiceDep):
     """查询任务状态；processing 中 status 即为当前阶段。"""
     task = await service.get(task_id)
+    return to_task_status_response(task)
+
+
+@router.post("/tasks/{task_id}/retry", response_model=TaskStatusResponse)
+async def retry_task(task_id: UUID, service: TaskServiceDep):
+    """失败任务重试；仅 failed 可重试，重复请求幂等。"""
+    task = await service.retry(task_id)
     return to_task_status_response(task)

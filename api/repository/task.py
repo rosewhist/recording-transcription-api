@@ -13,3 +13,10 @@ class TaskRepository:
     async def get_by_id(self, task_id: UUID) -> Optional[Task]:
         async with AsyncSessionFactory() as session:
             return await TaskDao(session).get_by_id(task_id)
+
+    async def requeue_failed(self, task_id: UUID) -> Optional[Task]:
+        async with AsyncSessionFactory() as session:
+            task = await TaskDao(session).requeue_failed(task_id)
+            if task is not None:
+                await session.commit()
+            return task

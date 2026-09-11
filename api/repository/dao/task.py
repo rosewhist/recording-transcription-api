@@ -276,6 +276,31 @@ class TaskDao:
             return None
         return int(row[0]), str(row[1])
 
+    async def requeue_failed(self, task_id: UUID) -> Optional[Task]:
+        """Atomically move failed → pending for manual retry; None if not failed."""
+        sql = text(
+            f"""
+            UPDATE tasks
+            SET status = 'pending',
+                retry_count = 0,
+                error_msg = NULL,
+                transcript = NULL,
+                summary = NULL,
+                locked_by = NULL,
+                lease_expires_at = NULL,
+                next_retry_at = {_SQL_UTC_NOW},
+                updated_at = {_SQL_UTC_NOW}
+            WHERE id = :task_id
+              AND status = 'failed'
+            RETURNING id
+            """
+        )
+        result = await self.session.execute(sql, {"task_id": task_id})
+        row = result.fetchone()
+        if row is None:
+            return None
+        return await self.get_by_id(row[0])
+
     async def reclaim_in_flight(
         self,
         *,

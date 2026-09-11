@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
 
     recording_repo = RecordingRepository()
     app.state.recording_service = RecordingService(repo=recording_repo, worker=worker)
-    app.state.task_service = TaskService(repo=TaskRepository())
+    app.state.task_service = TaskService(repo=TaskRepository(), worker=worker)
     app.state.worker = worker
 
     yield
