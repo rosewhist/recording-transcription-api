@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +18,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     LOG_DIR: str = str(_ROOT / "logs")
     LOG_LEVEL: str = "INFO"
+    LOG_JSON: bool = True
+    LOG_TO_FILE: bool = True
     LOG_MAX_BYTES: int = 10_485_760
     LOG_BACKUP_COUNT: int = 5
 
@@ -35,6 +40,16 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-chat"
     LLM_TIMEOUT_SECONDS: float = 30.0
     LLM_MAX_TOKENS: int = 512
+    LLM_MAX_RETRIES: int = 3
+
+    # ---- Worker ----
+    WORKER_MAX_CONCURRENCY: int = 3
+    WORKER_MAX_BATCH_SIZE: int = 50
+    WORKER_LEASE_SECONDS: int = 300
+    WORKER_MAX_RETRIES: int = 3
+    WORKER_POLL_IDLE_SECONDS: float = 1.0
+    WORKER_ALLOW_MOCK_LLM: bool = False
+    WORKER_ID: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=_ROOT / ".env",
@@ -50,6 +65,12 @@ class Settings(BaseSettings):
     @property
     def max_file_size_bytes(self) -> int:
         return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
+    @property
+    def log_file_path(self) -> Optional[str]:
+        if not self.LOG_TO_FILE:
+            return None
+        return str(Path(self.LOG_DIR) / "app.log")
 
 
 @lru_cache
