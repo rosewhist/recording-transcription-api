@@ -145,3 +145,23 @@ class RecordingService:
             task.status,
         )
         return recording, task
+
+    async def delete_recording(self, recording_id: UUID) -> None:
+        file_path = await self.repo.delete(recording_id)
+        if file_path is None:
+            raise RecordingNotFoundError(f"录音不存在: {recording_id}")
+        try:
+            await file_utils.remove_file_async(file_path)
+        except Exception:
+            logger.warning(
+                "录音 DB 已删除但磁盘文件清理失败，recording_id=%s，path=%s",
+                recording_id,
+                file_path,
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "录音已删除，recording_id=%s，file_path=%s",
+                recording_id,
+                file_path,
+            )

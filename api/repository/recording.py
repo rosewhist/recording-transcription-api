@@ -96,3 +96,16 @@ class RecordingRepository:
             by_recording = {t.recording_id: t for t in tasks}
             items = [(r, by_recording.get(r.id)) for r in recordings]
             return items, total
+
+    async def delete(self, recording_id: UUID) -> Optional[str]:
+        async with _session() as session:
+            recording_dao = RecordingDao(session)
+            task_dao = TaskDao(session)
+            recording = await recording_dao.get_by_id(recording_id)
+            if recording is None:
+                return None
+            file_path = recording.file_path
+            await task_dao.delete_by_recording(recording.id)
+            await recording_dao.delete(recording.id)
+            await session.commit()
+            return file_path

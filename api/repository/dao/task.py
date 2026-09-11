@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Column, Index, bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field, SQLModel, select
+from sqlmodel import Field, SQLModel, delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.repository.dao.task_types import IN_FLIGHT_STATUS_VALUES, TaskStatus
@@ -95,6 +95,12 @@ class TaskDao:
             return []
         stmt = select(Task).where(Task.recording_id.in_(recording_ids))
         return list((await self.session.scalars(stmt)).all())
+
+    async def delete_by_recording(self, recording_id: UUID) -> int:
+        result = await self.session.execute(
+            delete(Task).where(Task.recording_id == recording_id)
+        )
+        return int(result.rowcount or 0)
 
     async def claim_pending(
         self,

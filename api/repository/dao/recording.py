@@ -3,7 +3,7 @@ from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy import func
-from sqlmodel import Field, SQLModel, col, select
+from sqlmodel import Field, SQLModel, col, delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
@@ -52,3 +52,9 @@ class RecordingDao:
             .limit(limit)
         )
         return (await self.session.scalars(stmt)).all()
+
+    async def delete(self, recording_id: UUID) -> bool:
+        result = await self.session.execute(
+            delete(Recording).where(Recording.id == recording_id)
+        )
+        return bool(result.rowcount)

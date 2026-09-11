@@ -32,3 +32,6 @@ GET {{baseUrl}}/v1/recordings/{{recordingId}}
 
 ### 失败任务重试（仅 failed；重复请求幂等）
 POST {{baseUrl}}/v1/tasks/{{taskId}}/retry
+
+### 删除录音（含文件与关联任务）
+DELETE {{baseUrl}}/v1/recordings/{{recordingId}}

@@ -1,4 +1,4 @@
-"""录音路由：上传 / 列表 / 详情（删除后续再挂）。"""
+"""录音路由：上传 / 列表 / 详情 / 删除。"""
 from __future__ import annotations
 
 from typing import Annotated
@@ -47,3 +47,10 @@ async def get_recording(recording_id: UUID, service: RecordingServiceDep):
     """录音详情：处理完成时包含 transcript 与摘要结果。"""
     recording, task = await service.get_recording(recording_id)
     return to_detail_response(recording, task)
+
+
+@router.delete("/recordings/{recording_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_recording(recording_id: UUID, service: RecordingServiceDep):
+    """删除录音（含本地文件与关联任务）。"""
+    await service.delete_recording(recording_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
