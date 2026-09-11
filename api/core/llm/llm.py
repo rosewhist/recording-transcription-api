@@ -1,4 +1,4 @@
-"""LLM-backed meeting/recording summarizer (OpenAI-compatible APIs)."""
+"""基于 LLM 的会议/录音摘要器（兼容 OpenAI API）。"""
 from __future__ import annotations
 
 import asyncio
@@ -21,35 +21,35 @@ logger = get_logger(__name__)
 
 
 class SummaryResult(BaseModel):
-    """Structured summary payload returned to callers."""
+    """返回给调用方的结构化摘要结果。"""
 
-    summary: str = Field(..., description="One-sentence summary")
-    key_points: list[str] = Field(default_factory=list, description="Key points")
-    todos: list[str] = Field(default_factory=list, description="Action items")
+    summary: str = Field(..., description="一句话摘要")
+    key_points: list[str] = Field(default_factory=list, description="要点列表")
+    todos: list[str] = Field(default_factory=list, description="待办事项")
 
 
 class LLMParseError(ValueError):
-    """Raised when the model output is empty, truncated, or not valid JSON.
+    """模型输出为空、被截断或不是合法 JSON 时抛出。
 
-    Treated as retriable by ``summarize_model``.
+    在 ``summarize_model`` 中视为可重试错误。
     """
 
 
 def _is_retriable_api_status(exc: APIStatusError) -> bool:
-    """Return True for transient HTTP failures (5xx and 429)."""
+    """判断是否为可重试的瞬时 HTTP 失败（5xx 与 429）。"""
     return exc.status_code >= 500 or exc.status_code == 429
 
 
 class LLMSummarizer:
-    """Async summarizer with JSON enforcement, validation, and bounded retries.
+    """异步摘要器：强制 JSON、结果校验，并带有限次重试。
 
-    Features:
-      1. Prefer ``response_format=json_object``, then Pydantic validation
-      2. Exponential backoff for network / rate-limit / 5xx / parse errors
-      3. Three-layer JSON extraction fallback
-      4. SDK retries disabled to avoid stacking with this class
+    能力：
+      1. 优先使用 ``response_format=json_object``，再用 Pydantic 校验
+      2. 对网络 / 限流 / 5xx / 解析错误做指数退避
+      3. 三层 JSON 提取兜底
+      4. 关闭 SDK 自带重试，避免与本类策略叠加
 
-    Prefer one instance per worker process to reuse the HTTP connection pool.
+    建议每个 worker 进程共用一个实例，以便复用 HTTP 连接池。
     """
 
     def __init__(
@@ -66,7 +66,7 @@ class LLMSummarizer:
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
 
-        # Disable SDK retries; this class owns retry policy.
+        # 关闭 SDK 重试，由本类自行控制重试策略。
         self.client = client or AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -81,7 +81,7 @@ class LLMSummarizer:
 
     @classmethod
     def from_settings(cls, settings: Any = None) -> "LLMSummarizer":
-        """Build an instance from application Settings (loads .env via Settings)."""
+        """从应用 Settings 构建实例（通过 Settings 加载 .env）。"""
         if settings is None:
             from api.config.settings import get_settings
 
@@ -98,21 +98,21 @@ class LLMSummarizer:
         )
 
     async def aclose(self) -> None:
-        """Close the client only if this instance created it."""
+        """仅在本实例创建了 client 时关闭连接。"""
         if self._owns_client:
             await self.client.close()
 
     async def summarize(self, transcript: str) -> dict[str, Any]:
-        """Return a plain dict summary (``SummaryResult.model_dump()``)."""
+        """返回普通 dict 形式的摘要（``SummaryResult.model_dump()``）。"""
         result = await self.summarize_model(transcript)
         return result.model_dump()
 
     async def summarize_model(self, transcript: str) -> SummaryResult:
-        """Call the LLM and return a validated ``SummaryResult``."""
+        """调用 LLM 并返回校验后的 ``SummaryResult``。"""
         if not transcript or not transcript.strip():
             raise ValueError("transcript must not be empty")
 
-        # Prompts stay Chinese: product targets Chinese meeting transcripts.
+        # 提示词保持中文：产品面向中文会议转写文本。
         system_prompt, user_prompt = self._summary_prompts(transcript)
 
         last_exception: Optional[BaseException] = None
@@ -191,12 +191,12 @@ class LLMSummarizer:
     async def summarize_stream(
         self, transcript: str
     ) -> AsyncIterator[tuple[str, Any]]:
-        """Stream summary generation as (event, payload) pairs.
+        """以流式方式生成摘要，产出 ``(事件名, 载荷)``。
 
-        Yields:
-          - ``("delta", text_chunk)``
-          - ``("done", summary_dict)`` on success
-          - ``("error", message)`` on failure (then stops)
+        产出：
+          - ``("delta", 文本片段)``
+          - 成功时 ``("done", 摘要字典)``
+          - 失败时 ``("error", 错误信息)``（随后结束）
         """
         if not transcript or not transcript.strip():
             yield ("error", "transcript must not be empty")
@@ -260,7 +260,7 @@ class LLMSummarizer:
         chunk_size: int = 8,
         delay_seconds: float = 0.02,
     ) -> AsyncIterator[tuple[str, Any]]:
-        """Pseudo-stream a fixed JSON summary (for WORKER_ALLOW_MOCK_LLM)."""
+        """伪流式输出固定 JSON 摘要（供 WORKER_ALLOW_MOCK_LLM 使用）。"""
         payload = {
             "summary": "模拟摘要",
             "key_points": ["要点1"],
@@ -275,11 +275,11 @@ class LLMSummarizer:
         yield ("done", payload)
 
     def _backoff_delay(self, attempt: int) -> float:
-        """Exponential backoff: base, 2*base, 4*base, ..."""
+        """指数退避：base、2*base、4*base……"""
         return self.base_backoff * (2 ** (attempt - 1))
 
     def _rate_limit_delay(self, exc: RateLimitError, attempt: int) -> float:
-        """Prefer Retry-After header; otherwise fall back to exponential backoff."""
+        """优先使用 Retry-After 响应头；否则回退到指数退避。"""
         header_delay: Optional[float] = None
         response = getattr(exc, "response", None)
         if response is not None:
@@ -294,7 +294,7 @@ class LLMSummarizer:
         return header_delay if header_delay is not None else self._backoff_delay(attempt)
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Invoke chat.completions; fall back if ``response_format`` is unsupported."""
+        """调用 chat.completions；若网关不支持 ``response_format`` 则降级重试。"""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -312,7 +312,7 @@ class LLMSummarizer:
                 response_format={"type": "json_object"},
             )
         except APIStatusError as e:
-            # Some gateways reject response_format with HTTP 400; retry once without it.
+            # 部分网关会以 HTTP 400 拒绝 response_format；去掉后再试一次。
             if e.status_code == 400:
                 logger.warning(
                     "Gateway may not support response_format=json_object; "
@@ -340,13 +340,13 @@ class LLMSummarizer:
 
     @staticmethod
     def _parse_json_safely(raw_text: str) -> dict[str, Any]:
-        """Extract a JSON object with three fallbacks.
+        """用三层兜底从模型输出中提取 JSON 对象。
 
-        1. ``json.loads`` on the whole string
-        2. Strip a Markdown `` ```json `` fence
-        3. Regex from the first ``{`` to the last ``}``
+        1. 对整段文本直接 ``json.loads``
+        2. 去掉 Markdown 的 `` ```json `` 代码块围栏后再解析
+        3. 用正则截取第一个 ``{`` 到最后一个 ``}``
 
-        Raises ``LLMParseError`` if none succeed (retriable upstream).
+        全部失败时抛出 ``LLMParseError``（上层可重试）。
         """
         try:
             data = json.loads(raw_text)

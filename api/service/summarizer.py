@@ -1,4 +1,4 @@
-"""Thin service wrapper around ``LLMSummarizer`` for workers and business logic."""
+"""对 ``LLMSummarizer`` 的薄封装，供 worker 与业务层调用。"""
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Optional
@@ -8,10 +8,10 @@ from api.core.llm import LLMSummarizer, SummaryResult
 
 
 class SummarizerService:
-    """Lazy-build an ``LLMSummarizer`` from Settings and expose summarize APIs.
+    """按需从 Settings 构建 ``LLMSummarizer``，并对外提供摘要 API。
 
-    Prefer constructing with ``settings=...`` from app lifespan so config is
-    shared. Inject ``summarizer=...`` only in tests or when reusing a client.
+    建议在应用 lifespan 中传入 ``settings=...`` 以共享配置。
+    仅在测试或复用已有 client 时注入 ``summarizer=...``。
     """
 
     def __init__(
@@ -21,7 +21,7 @@ class SummarizerService:
     ) -> None:
         self.settings = settings or get_settings()
         self._summarizer = summarizer
-        # Only close clients this service created (not injected ones).
+        # 仅关闭由本服务创建的 client（不关闭外部注入的）。
         self._owns_summarizer = summarizer is None
 
     @property
@@ -33,23 +33,23 @@ class SummarizerService:
 
     @property
     def can_stream(self) -> bool:
-        """True if real LLM or mock stream is available."""
+        """真实 LLM 或 mock 流可用时返回 True。"""
         if self._summarizer is not None or self.settings.LLM_API_KEY:
             return True
         return bool(self.settings.WORKER_ALLOW_MOCK_LLM)
 
     async def summarize(self, transcript: str) -> dict[str, Any]:
-        """Return summary as a plain dict."""
+        """返回普通 dict 形式的摘要。"""
         return await self.summarizer.summarize(transcript)
 
     async def summarize_model(self, transcript: str) -> SummaryResult:
-        """Return a validated ``SummaryResult`` model."""
+        """返回校验后的 ``SummaryResult`` 模型。"""
         return await self.summarizer.summarize_model(transcript)
 
     async def summarize_stream(
         self, transcript: str
     ) -> AsyncIterator[tuple[str, Any]]:
-        """Yield (event, payload) for SSE: delta / done / error."""
+        """产出 SSE 用的 ``(事件, 载荷)``：delta / done / error。"""
         if self._summarizer is not None or self.settings.LLM_API_KEY:
             async for item in self.summarizer.summarize_stream(transcript):
                 yield item
@@ -61,7 +61,7 @@ class SummarizerService:
         yield ("error", "LLM is not configured")
 
     async def aclose(self) -> None:
-        """Close the underlying HTTP client if this service owns it."""
+        """若本服务拥有底层 HTTP client，则关闭它。"""
         if self._summarizer is not None and self._owns_summarizer:
             await self._summarizer.aclose()
             self._summarizer = None

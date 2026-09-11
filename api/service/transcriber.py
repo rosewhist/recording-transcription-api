@@ -1,4 +1,4 @@
-"""Transcription service (Mock ASR for P0; swap for a real provider later)."""
+"""转写服务（P0 使用 Mock ASR；后续可替换为真实提供商）。"""
 from __future__ import annotations
 
 import asyncio
@@ -15,10 +15,10 @@ TaskId = Union[UUID, str]
 
 
 class TranscriberService:
-    """Produce a transcript from an audio file path.
+    """根据音频文件路径生成转写文本。
 
-    Current implementation is Mock ASR per need.txt:
-    random 5~15s latency and ~20% failure rate.
+    当前为 need.txt 要求的 Mock ASR：
+    随机耗时 5~15 秒，约 20% 失败率。
     """
 
     def __init__(
@@ -42,7 +42,7 @@ class TranscriberService:
         file_path: str,
         task_id: Optional[TaskId] = None,
     ) -> str:
-        """Return transcript text for ``file_path`` (Mock)."""
+        """对 ``file_path`` 返回转写文本（Mock）。"""
         t0 = time.perf_counter()
         await asyncio.sleep(
             random.uniform(self.min_delay_seconds, self.max_delay_seconds)

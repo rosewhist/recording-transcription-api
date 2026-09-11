@@ -1,4 +1,4 @@
-"""Single-task executor: lease, ASR, summarize, status transitions."""
+"""单任务执行器：租约维持、ASR、摘要与状态流转。"""
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +40,7 @@ class TaskExecutor:
         self.allow_mock_llm = allow_mock_llm
 
     async def process(self, task_id: UUID) -> None:
-        # Prefer inherited task-* from dispatcher; re-bind for safety.
+        # 优先沿用 dispatcher 传入的 task-*；此处再绑定一次更稳妥。
         token = bind_task_trace(task_id)
         t0 = time.perf_counter()
         try:
