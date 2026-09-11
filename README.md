@@ -9,8 +9,8 @@
 ```bash
 # 仓库根目录
 cp .env.example .env
-# 评分/演示请填写 LLM_API_KEY（DeepSeek 等 OpenAI 兼容接口）——有 Key 时走真实摘要
-# 未填写时 compose 默认 WORKER_ALLOW_MOCK_LLM=true，仅用于无 Key 一键跑通（此项会降分）
+# 评分/演示请填写 LLM_API_KEY（勿加引号，写成 LLM_API_KEY=sk-...）——有 Key 时走真实摘要
+# 未填写时 .env.example 默认 WORKER_ALLOW_MOCK_LLM=true，仅用于无 Key 一键跑通（此项会降分）
 
 docker compose -f docker/docker-compose.yaml up --build
 ```

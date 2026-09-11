@@ -35,28 +35,18 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
-    # 读取仓库根 .env（不存在也不失败）；下方 environment 覆盖 Docker 专用项
+    # LLM / Worker / 日志等从仓库根 .env 注入（勿在下方用 ${VAR:-} 再覆盖，
+    # 否则在 docker/ 下插值常为空，会把 Key 冲成空字符串）
     env_file:
       - path: ../.env
         required: false
     environment:
+      # 仅覆盖 Docker 网络与路径（必须覆盖 .env 里可能写的 127.0.0.1）
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
-      # 必须走 compose 网络主机名 db，不能用 .env 里的 127.0.0.1
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db:5432/recording_transcription"
       UPLOAD_DIR: "/app/uploads"
       LOG_DIR: "/app/logs"
-      LLM_API_KEY: "${LLM_API_KEY:-}"
-      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
-      LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
-      # 无 Key 时默认 Mock 摘要，保证一键启动可跑通（有 Key 时 worker 仍走真实 LLM）
-      # 评分请在仓库根 .env 填写 LLM_API_KEY
-      WORKER_ALLOW_MOCK_LLM: "${WORKER_ALLOW_MOCK_LLM:-true}"
-      WORKER_MAX_CONCURRENCY: "${WORKER_MAX_CONCURRENCY:-3}"
-      WORKER_LEASE_SECONDS: "${WORKER_LEASE_SECONDS:-300}"
-      WORKER_MAX_RETRIES: "${WORKER_MAX_RETRIES:-3}"
-      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      LOG_JSON: "${LOG_JSON:-true}"
     volumes:
       - ../uploads:/app/uploads
       - ../logs:/app/logs
