@@ -1,6 +1,6 @@
 # 录音转写与智能摘要 API
 
-客户端上传音频后，服务端异步完成 **Mock ASR 转写** -> **LLM 结构化摘要**，并提供任务查询 / 重试 / 删除等接口。
+客户端上传音频后，服务端异步完成 **Mock ASR 转写** → **LLM 结构化摘要**，并提供任务查询、列表/详情、失败重试、删除，以及摘要 SSE 流式接口。
 
 ## 一键启动（推荐）
 
@@ -31,6 +31,7 @@ docker compose -f docker/docker-compose.yaml down
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+# 跑测试时：pip install -r requirements-dev.txt
 cp .env.example .env
 # 启动 Postgres（可用上面的 compose 只起 db）后设置 DATABASE_URL
 # DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/recording_transcription
@@ -39,29 +40,36 @@ alembic upgrade head
 uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
+单元测试：
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -v
+```
+
 ## 架构说明
 
 ```text
-                 +-------------+
-   multipart     |   FastAPI   |  POST /v1/recordings (立即返回 pending)
-   upload ------>|  + /v1 API  |
-                 +------+------+
-                        | 写 recordings + tasks(pending)
-                        v
-                 +-------------+
-                 |  PostgreSQL |  租约 / 状态 / transcript / summary(JSONB)
-                 +------+------+
-                        | FOR UPDATE SKIP LOCKED 抢占
-                        v
-                 +-------------+     5~15s / 20% 失败
-                 | TaskWorker  |---> Mock ASR ---> status=summarizing
-                 | (asyncio)   |---> LLM JSON  ---> status=done|failed
-                 +-------------+
-                        | 失败：指数退避（最多失败 3 次后 failed，共最多 4 次执行）
-                        | 重启 / 周期：回收本进程僵尸与过期租约
+                 +------------------+
+   multipart     |     FastAPI      |  POST /v1/recordings → 立即返回 pending
+   upload ------>|  /v1 API + SSE   |  GET 任务/录音 / retry / delete / summary/stream
+                 +--------+---------+
+                          | 写 recordings + tasks(pending)
+                          v
+                 +------------------+
+                 |    PostgreSQL    |  租约 / 状态 / transcript / summary(JSONB)
+                 +--------+---------+
+                          | FOR UPDATE SKIP LOCKED 抢占
+                          v
+                 +------------------+     5~15s / ~20% 失败
+                 |   TaskWorker     |---> Mock ASR ---> summarizing
+                 | dispatcher+exec  |---> LLM JSON  ---> done | failed
+                 +------------------+
+                          | 失败：指数退避（最多失败 3 次后再 failed，共最多 4 次执行）
+                          | 重启 / 周期：回收本进程僵尸与过期租约
 ```
 
-**异步选型**：进程内 `asyncio` Worker（非 Celery/Redis）。理由：题量小、部署简单、与 FastAPI 同事件循环即可。
+**异步选型**：进程内 `asyncio` Worker（`dispatcher` 抢占调度 + `executor` 执行），非 Celery/Redis。理由：题量小、部署简单、与 FastAPI 同事件循环即可。
 
 **未完成任务如何恢复**：
 
@@ -78,16 +86,20 @@ uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 | `recordings` | 文件元数据；`file_hash` 唯一（上传幂等） |
 | `tasks` | 与录音 1:1；`status` / `transcript` / `summary(JSONB)` / `retry_count` / `next_retry_at` / `locked_by` / `lease_expires_at` |
 
-状态机：`pending -> transcribing -> summarizing -> done`，任一环节可进入 `failed`。
+状态机：`pending → transcribing → summarizing → done`，任一环节可进入 `failed`。查询接口用细粒度 `status` 体现当前阶段（不另造 `processing`）。
 
-## API 一览（当前开放）
+## API 一览
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /v1/recordings | 上传音频（wav/mp3/m4a/aac，<=50MB） |
 | GET | /health | 健康检查 |
-
-
+| POST | /v1/recordings | 上传音频（wav/mp3/m4a/aac，≤50MB）；新建 `201`，幂等命中 `200` |
+| GET | /v1/recordings | 录音列表，分页（`page`/`page_size`），按创建时间倒序，含任务状态 |
+| GET | /v1/recordings/{id} | 录音详情；`done` 时含 `transcript` 与 `summary` |
+| DELETE | /v1/recordings/{id} | 删除录音、关联任务与本地文件（`204`） |
+| GET | /v1/recordings/{id}/summary/stream | SSE 流式摘要（需已有 `transcript`；不写库） |
+| GET | /v1/tasks/{task_id} | 查询任务状态与结果字段 |
+| POST | /v1/tasks/{task_id}/retry | 仅 `failed` 可重试；已排队/处理中幂等返回 |
 
 统一错误体：
 
@@ -95,15 +107,41 @@ uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 { "error": { "code": "recording_not_found", "message": "...", "details": null } }
 ```
 
+常见状态码：`400`（参数/上传不合法）、`404`（录音/任务不存在）、`409`（任务不可重试）、`503`（无 LLM 且未开 mock，无法流式摘要）。
+
 调试集合：根目录 [`api.http`](api.http)（VS Code REST Client / IDEA HTTP Client 可导入）。
+
+### SSE 事件约定
+
+```text
+event: delta
+data: {"text":"<chunk>"}
+
+event: done
+data: {"summary":"...","key_points":[],"todos":[]}
+
+event: error
+data: {"message":"..."}
+```
 
 ## 技术取舍
 
-- **ASR**：按题目要求 Mock（随机 5~15s，约 20% 失败），未接真实 ASR，避免题外复杂度。
-- **LLM**：OpenAI 兼容 Chat Completions（默认 DeepSeek）；强制 JSON + 多层解析兜底 + 超时/限流/5xx 重试。无 Key 时可用 `WORKER_ALLOW_MOCK_LLM=true`（得分会按题目说明降低）。
+- **ASR**：按题目要求 Mock（随机 5~15s，约 20% 失败），未接真实 ASR。
+- **LLM**：OpenAI 兼容 Chat Completions（默认 DeepSeek）；强制 JSON + 多层解析兜底 + 超时/限流/5xx 重试。无 Key 时可用 `WORKER_ALLOW_MOCK_LLM=true`（得分会按题目说明降低）。SSE 与 worker 共用同一套摘要能力。
 - **队列**：DB 状态 + `SKIP LOCKED` 抢占，免额外部署 Redis。
 - **并发**：`WORKER_MAX_CONCURRENCY`（默认 3）。
-- **日志**：关键路径 INFO/WARNING/ERROR，可用 `task_id` / `X-Request-ID` 串生命周期。
+- **上传幂等**：基于文件 SHA-256 去重。
+- **日志**：关键路径 INFO/WARNING/ERROR；上传后绑定 `task-{id}`，可用 `X-Request-ID` / `task_id` 串生命周期。
+- **测试**：`tests/` 下对核心 HTTP 接口做单元测试（mock 仓储/服务）。
+
+## 已完成的加分项
+
+- 失败自动重试（指数退避，`WORKER_MAX_RETRIES`）
+- 服务重启 / 租约过期恢复
+- LLM SSE 流式摘要
+- 上传哈希幂等
+- Worker 并发上限
+- 核心接口单元测试
 
 ## 环境变量（常用）
 
@@ -113,15 +151,15 @@ uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 |------|------|
 | `DATABASE_URL` | `postgresql+asyncpg://...` |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 摘要模型 |
-| `WORKER_ALLOW_MOCK_LLM` | 无 Key 时占位摘要 |
+| `WORKER_ALLOW_MOCK_LLM` | 无 Key 时占位摘要（含 SSE mock 流） |
 | `WORKER_MAX_CONCURRENCY` / `WORKER_LEASE_SECONDS` | 并发与租约 |
 | `LOG_JSON` / `LOG_LEVEL` | 日志 |
 
 ## 已知问题与未完成项
 
-- 未实现加分项 SSE：`GET /v1/recordings/{id}/summary/stream`
-- 未提供自动化测试与公网部署
+- 未提供公网部署地址（本地 / Docker 一键启动已支持）
 - Mock ASR 失败率/耗时为随机，联调时任务可能多次自动重试后才 `done`
+- SSE 流式摘要为「现算一遍」，**不落库**；与 worker 流水线写入的 `summary` 相互独立
 - 多 API 副本时写同一日志文件需改用并发安全 handler（当前单进程 compose 足够）
 - `WORKER_MAX_RETRIES=3` 表示失败计数达到 3 仍回 `pending`，第 4 次失败置 `failed`（初始尝试 + 最多 3 次再入队）
 - `users` 表在初始迁移中预留，鉴权不在考察范围，业务未使用
@@ -132,12 +170,13 @@ uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 api/
   app.py              # FastAPI 入口
   controller/         # HTTP
-  service/            # 业务
+  service/            # 业务（recording / task / summarizer / transcriber）
   repository/         # 仓储 + DAO
-  worker/             # 异步流水线
+  worker/             # dispatcher / executor / common
   core/               # db / logger / llm / errors
+  schema/             # 响应模型
+tests/                # pytest 单元测试
 alembic/              # 迁移
 docker/               # compose
 api.http              # 接口调试
 ```
-

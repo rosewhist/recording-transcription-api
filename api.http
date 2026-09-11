@@ -5,16 +5,17 @@
 ### 健康检查
 GET {{baseUrl}}/health
 
-### 上传录音（请改成本地真实音频路径）
+### 上传录音（Postman：Body → form-data → key=file, type=File）
+# 测试文件：testdata/demo.wav | demo2.wav | short.wav
 # @name upload
 POST {{baseUrl}}/v1/recordings
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
-Content-Disposition: form-data; name="file"; filename="demo.mp3"
-Content-Type: audio/mpeg
+Content-Disposition: form-data; name="file"; filename="demo.wav"
+Content-Type: audio/wav
 
-< ./uploads/demo.mp3
+< ./testdata/demo.wav
 ------Boundary--
 
 ### 从上传响应取出 id

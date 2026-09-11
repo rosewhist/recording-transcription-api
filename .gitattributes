@@ -11,6 +11,7 @@
 *.json text eol=lf
 *.http text eol=lf
 Dockerfile text eol=lf
+*.sh text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
 .env.example text eol=lf
