@@ -1,6 +1,6 @@
 # 在仓库根目录执行：
 #   docker compose -f docker/docker-compose.yaml up --build
-# 或在 docker/ 目录执行：
+# 或在 docker/ 目录执行（需保证能解析到仓库根的 .env / 构建上下文）：
 #   docker compose up --build
 
 services:
@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: recording_transcription
     ports:
-      # 宿主机 5432 常被占用时改用 5433；容器内仍是 5432（api 服务用 db:5432）
+      # 宿主机 5432 常被占用时改用 5433；容器内仍是 5432（api 用 db:5432）
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -35,20 +35,42 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    # 读取仓库根 .env（不存在也不失败）；下方 environment 覆盖 Docker 专用项
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
+      # 必须走 compose 网络主机名 db，不能用 .env 里的 127.0.0.1
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db:5432/recording_transcription"
+      UPLOAD_DIR: "/app/uploads"
+      LOG_DIR: "/app/logs"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
       LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
       # 无 Key 时默认 Mock 摘要，保证一键启动可跑通；有 Key 时可在 .env 设为 false
       WORKER_ALLOW_MOCK_LLM: "${WORKER_ALLOW_MOCK_LLM:-true}"
+      WORKER_MAX_CONCURRENCY: "${WORKER_MAX_CONCURRENCY:-3}"
+      WORKER_LEASE_SECONDS: "${WORKER_LEASE_SECONDS:-300}"
+      WORKER_MAX_RETRIES: "${WORKER_MAX_RETRIES:-3}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       LOG_JSON: "${LOG_JSON:-true}"
     volumes:
       - ../uploads:/app/uploads
       - ../logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
 
 volumes:
   postgres_data:
