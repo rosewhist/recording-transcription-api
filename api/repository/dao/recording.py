@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import func
+from sqlalchemy import Column, DateTime, func
 from sqlmodel import Field, SQLModel, col, delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -19,8 +19,14 @@ class Recording(SQLModel, table=True):
     file_path: str = Field(max_length=1000)
     file_size: int = Field(default=0)
     file_hash: str = Field(max_length=64, unique=True, index=True)
-    created_at: datetime = Field(default_factory=_utcnow, index=True)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class RecordingDao:

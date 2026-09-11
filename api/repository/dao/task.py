@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Index, bindparam, text
+from sqlalchemy import Column, DateTime, Index, bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel, delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -47,12 +47,24 @@ class Task(SQLModel, table=True):
     )
     retry_count: int = Field(default=0)
     locked_by: Optional[str] = Field(default=None, max_length=64)
-    next_retry_at: datetime = Field(default_factory=_utcnow)
-    lease_expires_at: Optional[datetime] = Field(default=None)
+    next_retry_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    lease_expires_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
     transcript: Optional[str] = Field(default=None)
     error_msg: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
     # PG JSONB only — Recording has no equivalent simple Field mapping.
     summary: Optional[dict[str, Any]] = Field(
@@ -128,7 +140,7 @@ class TaskDao:
             SET status           = 'transcribing',
                 locked_by        = :worker_id,
                 lease_expires_at = {_SQL_UTC_NOW}
-                    + (:lease_seconds || ' seconds')::interval,
+                    + make_interval(secs => :lease_seconds),
                 updated_at       = {_SQL_UTC_NOW}
             FROM locked
             WHERE t.id = locked.id
@@ -157,7 +169,7 @@ class TaskDao:
             f"""
             UPDATE tasks
             SET lease_expires_at = {_SQL_UTC_NOW}
-                    + (:lease_seconds || ' seconds')::interval,
+                    + make_interval(secs => :lease_seconds),
                 updated_at = {_SQL_UTC_NOW}
             WHERE id = :task_id
               AND locked_by = :worker_id
