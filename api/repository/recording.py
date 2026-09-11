@@ -69,3 +69,19 @@ class RecordingRepository:
     ) -> tuple[Optional[Recording], Optional[Task]]:
         async with _session() as session:
             return await _by_hash(session, file_hash)
+
+    async def list_page(
+        self, *, page: int, page_size: int
+    ) -> tuple[list[tuple[Recording, Optional[Task]]], int]:
+        offset = (page - 1) * page_size
+        async with _session() as session:
+            recording_dao = RecordingDao(session)
+            task_dao = TaskDao(session)
+            total = await recording_dao.count_all()
+            recordings = list(await recording_dao.list_page(offset=offset, limit=page_size))
+            if not recordings:
+                return [], total
+            tasks = await task_dao.list_by_recording_ids([r.id for r in recordings])
+            by_recording = {t.recording_id: t for t in tasks}
+            items = [(r, by_recording.get(r.id)) for r in recordings]
+            return items, total

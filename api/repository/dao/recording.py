@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel, select
+from sqlalchemy import func
+from sqlmodel import Field, SQLModel, col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
@@ -38,3 +39,16 @@ class RecordingDao:
 
     async def get_by_id(self, recording_id: UUID) -> Optional[Recording]:
         return await self.session.get(Recording, recording_id)
+
+    async def count_all(self) -> int:
+        stmt = select(func.count()).select_from(Recording)
+        return int((await self.session.scalar(stmt)) or 0)
+
+    async def list_page(self, *, offset: int, limit: int) -> Sequence[Recording]:
+        stmt = (
+            select(Recording)
+            .order_by(col(Recording.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return (await self.session.scalars(stmt)).all()

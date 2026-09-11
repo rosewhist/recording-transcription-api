@@ -90,6 +90,12 @@ class TaskDao:
         stmt = select(Task).where(Task.recording_id == recording_id)
         return (await self.session.scalars(stmt)).first()
 
+    async def list_by_recording_ids(self, recording_ids: Sequence[UUID]) -> list[Task]:
+        if not recording_ids:
+            return []
+        stmt = select(Task).where(Task.recording_id.in_(recording_ids))
+        return list((await self.session.scalars(stmt)).all())
+
     async def claim_pending(
         self,
         *,

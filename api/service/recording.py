@@ -7,13 +7,15 @@ from fastapi import UploadFile
 
 from api.config.settings import Settings, get_settings
 from api.core.logger import bind_task_trace, get_logger, trace_id_var
-from api.domain.exceptions import TaskNotFoundError
+from api.domain.exceptions import InvalidRequestError, TaskNotFoundError
 from api.repository.dao import Recording, Task
 from api.repository.recording import RecordingRepository
 from api.utils import file as file_utils
 from api.worker import TaskWorker
 
 logger = get_logger(__name__)
+
+_MAX_PAGE_SIZE = 100
 
 
 def _require_task(task: Optional[Task]) -> Task:
@@ -107,3 +109,21 @@ class RecordingService:
                 task.status,
             )
         return recording, task, created
+
+    async def list_recordings(
+        self, *, page: int, page_size: int
+    ) -> tuple[list[tuple[Recording, Optional[Task]]], int]:
+        if page < 1:
+            raise InvalidRequestError("page 必须 >= 1")
+        if page_size < 1 or page_size > _MAX_PAGE_SIZE:
+            raise InvalidRequestError(f"page_size 必须在 1~{_MAX_PAGE_SIZE} 之间")
+
+        items, total = await self.repo.list_page(page=page, page_size=page_size)
+        logger.info(
+            "查询录音列表，page=%s，page_size=%s，total=%s，返回=%s",
+            page,
+            page_size,
+            total,
+            len(items),
+        )
+        return items, total

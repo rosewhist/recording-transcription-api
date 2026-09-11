@@ -23,3 +23,6 @@ Content-Type: audio/mpeg
 
 ### 查询任务状态（processing 中 status 为当前阶段）
 GET {{baseUrl}}/v1/tasks/{{taskId}}
+
+### 录音列表（按创建时间倒序，含任务状态）
+GET {{baseUrl}}/v1/recordings?page=1&page_size=20

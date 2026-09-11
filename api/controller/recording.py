@@ -1,12 +1,17 @@
-"""录音路由：上传（列表/详情/删除后续再挂）。"""
+"""录音路由：上传 / 列表（详情/删除后续再挂）。"""
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, Response, UploadFile, status
+from fastapi import APIRouter, File, Query, Response, UploadFile, status
 
 from api.depends import RecordingServiceDep
-from api.schema.recording import RecordingUploadResponse, to_upload_response
+from api.schema.recording import (
+    RecordingListResponse,
+    RecordingUploadResponse,
+    to_list_response,
+    to_upload_response,
+)
 
 router = APIRouter(tags=["recordings"])
 
@@ -21,3 +26,14 @@ async def upload_recording(
     recording, task, created = await service.upload(file)
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return to_upload_response(recording, task)
+
+
+@router.get("/recordings", response_model=RecordingListResponse)
+async def list_recordings(
+    service: RecordingServiceDep,
+    page: Annotated[int, Query(ge=1, description="页码，从 1 开始")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="每页条数，1~100")] = 20,
+):
+    """录音列表：按创建时间倒序，含每条最新任务状态。"""
+    items, total = await service.list_recordings(page=page, page_size=page_size)
+    return to_list_response(items, page=page, page_size=page_size, total=total)
