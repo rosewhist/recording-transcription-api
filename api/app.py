@@ -10,8 +10,11 @@ from api.core.db.migrate import run_migrations
 from api.core.errors import register_exception_handlers
 from api.core.logger import setup_logging, trace_id_var
 from api.controller.recording import router as recording_router
+from api.controller.task import router as task_router
 from api.repository.recording import RecordingRepository
+from api.repository.task import TaskRepository
 from api.service.recording import RecordingService
+from api.service.task import TaskService
 from api.service.transcriber import TranscriberService
 from api.worker import TaskWorker
 
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI):
 
     recording_repo = RecordingRepository()
     app.state.recording_service = RecordingService(repo=recording_repo, worker=worker)
+    app.state.task_service = TaskService(repo=TaskRepository())
     app.state.worker = worker
 
     yield
@@ -82,7 +86,8 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(recording_router, prefix="/v1")
-    # 任务查询/重试、录音列表/详情/删除：后续再挂
+    app.include_router(task_router, prefix="/v1")
+    
 
     return app
 

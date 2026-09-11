@@ -1,4 +1,4 @@
-### 录音转写服务 API 调试（当前仅开放上传）
+### 录音转写服务 API 调试
 ### 需先启动服务：http://127.0.0.1:8000
 @baseUrl = http://127.0.0.1:8000
 
@@ -21,3 +21,5 @@ Content-Type: audio/mpeg
 @recordingId = {{upload.response.body.recording_id}}
 @taskId = {{upload.response.body.task_id}}
 
+### 查询任务状态（processing 中 status 为当前阶段）
+GET {{baseUrl}}/v1/tasks/{{taskId}}
