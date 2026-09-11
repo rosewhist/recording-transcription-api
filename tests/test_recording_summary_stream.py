@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -12,14 +13,18 @@ from api.repository.dao.task_types import TaskStatus
 from api.service.recording import RecordingService
 from api.service.summarizer import SummarizerService
 
+_DONE_PAYLOAD = {"summary": "hi", "key_points": ["a"], "todos": ["t1"]}
+
 
 async def _fake_stream(_transcript: str):
     yield ("delta", '{"summary"')
     yield ("delta", ': "hi"}')
-    yield (
-        "done",
-        {"summary": "hi", "key_points": ["a"], "todos": []},
-    )
+    yield ("done", _DONE_PAYLOAD)
+
+
+async def _error_stream(_transcript: str):
+    yield ("delta", "partial")
+    yield ("error", "llm timeout")
 
 
 @pytest.fixture
@@ -41,18 +46,27 @@ def recording_service(
     )
 
 
+def _done_task(recording: Recording, *, transcript: str = "hello transcript") -> Task:
+    return Task(
+        id=uuid4(),
+        recording_id=recording.id,
+        status=TaskStatus.DONE.value,
+        transcript=transcript,
+    )
+
+
+def _assert_no_repo_writes(mock_repo: MagicMock) -> None:
+    mock_repo.create_recording_and_task.assert_not_called()
+    mock_repo.delete.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_summary_stream_sse(
     client: AsyncClient,
     mock_repo: MagicMock,
     sample_recording: Recording,
 ):
-    task = Task(
-        id=uuid4(),
-        recording_id=sample_recording.id,
-        status=TaskStatus.DONE.value,
-        transcript="hello transcript",
-    )
+    task = _done_task(sample_recording)
     mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
 
     resp = await client.get(
@@ -65,7 +79,33 @@ async def test_summary_stream_sse(
     assert "event: delta" in body
     assert 'data: {"text":' in body
     assert "event: done" in body
-    assert '"summary": "hi"' in body
+    assert f"data: {json.dumps(_DONE_PAYLOAD, ensure_ascii=False)}" in body
+    mock_repo.get_by_id.assert_awaited_once_with(sample_recording.id)
+    _assert_no_repo_writes(mock_repo)
+
+
+@pytest.mark.asyncio
+async def test_summary_stream_emits_error_event(
+    client: AsyncClient,
+    mock_repo: MagicMock,
+    mock_summarizer: MagicMock,
+    sample_recording: Recording,
+):
+    task = _done_task(sample_recording)
+    mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
+    mock_summarizer.summarize_stream = _error_stream
+
+    resp = await client.get(
+        f"/v1/recordings/{sample_recording.id}/summary/stream"
+    )
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    body = resp.text
+    assert "event: delta" in body
+    assert "event: error" in body
+    assert 'data: {"message": "llm timeout"}' in body
+    _assert_no_repo_writes(mock_repo)
 
 
 @pytest.mark.asyncio
@@ -107,14 +147,28 @@ async def test_summary_stream_unavailable_without_llm(
     sample_recording: Recording,
     recording_service: RecordingService,
 ):
-    task = Task(
-        id=uuid4(),
-        recording_id=sample_recording.id,
-        status=TaskStatus.DONE.value,
-        transcript="hello",
-    )
+    task = _done_task(sample_recording, transcript="hello")
     mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
     recording_service.summarizer = None
+
+    resp = await client.get(
+        f"/v1/recordings/{sample_recording.id}/summary/stream"
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "service_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_summary_stream_unavailable_when_cannot_stream(
+    client: AsyncClient,
+    mock_repo: MagicMock,
+    mock_summarizer: MagicMock,
+    sample_recording: Recording,
+):
+    task = _done_task(sample_recording, transcript="hello")
+    mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
+    mock_summarizer.can_stream = False
 
     resp = await client.get(
         f"/v1/recordings/{sample_recording.id}/summary/stream"
