@@ -1,11 +1,14 @@
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import UUID, uuid4
-from sqlmodel import Field, SQLModel
+
+from sqlmodel import Field, SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
 
 class Recording(SQLModel, table=True):
     __tablename__ = "recordings"
@@ -14,11 +17,24 @@ class Recording(SQLModel, table=True):
     file_name: str = Field(max_length=255)
     file_path: str = Field(max_length=1000)
     file_size: int = Field(default=0)
-    file_hash: str = Field(max_length=64, unique=True, index=True)  # sha256，用于上传幂等
+    file_hash: str = Field(max_length=64, unique=True, index=True)
     created_at: datetime = Field(default_factory=_utcnow, index=True)
     updated_at: datetime = Field(default_factory=_utcnow)
-class RecordingDao:
-    """录音表的基础查询封装。"""
 
+
+class RecordingDao:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def create(self, recording: Recording) -> Recording:
+        self.session.add(recording)
+        await self.session.flush()
+        await self.session.refresh(recording)
+        return recording
+
+    async def get_by_hash(self, file_hash: str) -> Optional[Recording]:
+        stmt = select(Recording).where(Recording.file_hash == file_hash)
+        return (await self.session.scalars(stmt)).first()
+
+    async def get_by_id(self, recording_id: UUID) -> Optional[Recording]:
+        return await self.session.get(Recording, recording_id)

@@ -1,3 +1,6 @@
+"""Task status enums and status-set constants shared by API / worker / DAO."""
+from __future__ import annotations
+
 import sys
 
 if sys.version_info >= (3, 11):
@@ -6,11 +9,11 @@ else:
     from enum import Enum
 
     class StrEnum(str, Enum):
-        """Python 3.9/3.10 兼容的 StrEnum。"""
+        """StrEnum for Python 3.9/3.10."""
 
 
 class TaskStatus(StrEnum):
-    """任务状态。API 与数据库统一使用小写值。"""
+    """Task lifecycle status; DB and API use lowercase string values."""
 
     PENDING = "pending"
     TRANSCRIBING = "transcribing"
@@ -19,7 +22,14 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
 
 
-# 仍在流转、服务重启后需要恢复的状态
-RECOVERABLE_STATUSES = (TaskStatus.PENDING, TaskStatus.TRANSCRIBING, TaskStatus.SUMMARIZING)
-# 终态
+# Actively processed (has / should have a lease).
+IN_FLIGHT_STATUSES = (TaskStatus.TRANSCRIBING, TaskStatus.SUMMARIZING)
+# Still in the pipeline (queue + in-flight); restart-safe recoverable set.
+RECOVERABLE_STATUSES = (TaskStatus.PENDING,) + IN_FLIGHT_STATUSES
+# Terminal outcomes.
 TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED)
+
+# Convenience string tuples for SQL ``IN (...)`` / ORM comparisons.
+IN_FLIGHT_STATUS_VALUES = tuple(s.value for s in IN_FLIGHT_STATUSES)
+RECOVERABLE_STATUS_VALUES = tuple(s.value for s in RECOVERABLE_STATUSES)
+TERMINAL_STATUS_VALUES = tuple(s.value for s in TERMINAL_STATUSES)
