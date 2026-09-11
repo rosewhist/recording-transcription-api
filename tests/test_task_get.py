@@ -16,19 +16,6 @@ from api.service.task import TaskService
 
 
 @pytest.fixture
-def sample_task() -> Task:
-    return Task(
-        id=uuid4(),
-        recording_id=uuid4(),
-        status=TaskStatus.TRANSCRIBING.value,
-        retry_count=1,
-        transcript=None,
-        error_msg=None,
-        summary=None,
-    )
-
-
-@pytest.fixture
 def mock_task_repo() -> MagicMock:
     return MagicMock()
 
@@ -55,25 +42,42 @@ async def client(app: FastAPI):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.PENDING,
+        TaskStatus.TRANSCRIBING,
+        TaskStatus.SUMMARIZING,
+    ],
+)
 async def test_get_task_returns_current_stage(
     client: AsyncClient,
     mock_task_repo: MagicMock,
-    sample_task: Task,
+    status: TaskStatus,
 ):
-    mock_task_repo.get_by_id = AsyncMock(return_value=sample_task)
+    task = Task(
+        id=uuid4(),
+        recording_id=uuid4(),
+        status=status.value,
+        retry_count=1,
+        transcript=None,
+        error_msg=None,
+        summary=None,
+    )
+    mock_task_repo.get_by_id = AsyncMock(return_value=task)
 
-    resp = await client.get(f"/v1/tasks/{sample_task.id}")
+    resp = await client.get(f"/v1/tasks/{task.id}")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["task_id"] == str(sample_task.id)
-    assert body["recording_id"] == str(sample_task.recording_id)
-    assert body["status"] == TaskStatus.TRANSCRIBING.value
+    assert body["task_id"] == str(task.id)
+    assert body["recording_id"] == str(task.recording_id)
+    assert body["status"] == status.value
     assert body["retry_count"] == 1
     assert body["error_msg"] is None
     assert body["transcript"] is None
     assert body["summary"] is None
-    mock_task_repo.get_by_id.assert_awaited_once_with(sample_task.id)
+    mock_task_repo.get_by_id.assert_awaited_once_with(task.id)
 
 
 @pytest.mark.asyncio
@@ -81,13 +85,14 @@ async def test_get_task_done_includes_results(
     client: AsyncClient,
     mock_task_repo: MagicMock,
 ):
+    summary = {"summary": "一句话", "key_points": ["a"], "todos": ["t1"]}
     task = Task(
         id=uuid4(),
         recording_id=uuid4(),
         status=TaskStatus.DONE.value,
         retry_count=0,
         transcript="hello world",
-        summary={"summary": "一句话", "key_points": ["a"], "todos": []},
+        summary=summary,
     )
     mock_task_repo.get_by_id = AsyncMock(return_value=task)
 
@@ -97,7 +102,7 @@ async def test_get_task_done_includes_results(
     body = resp.json()
     assert body["status"] == TaskStatus.DONE.value
     assert body["transcript"] == "hello world"
-    assert body["summary"]["summary"] == "一句话"
+    assert body["summary"] == summary
 
 
 @pytest.mark.asyncio
