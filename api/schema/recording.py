@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 from uuid import UUID
+
 from pydantic import BaseModel
+
 from api.repository.dao.recording import Recording
 from api.repository.dao.task import Task
 from api.repository.dao.task_types import TaskStatus

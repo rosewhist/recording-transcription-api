@@ -1,0 +1,23 @@
+### 录音转写服务 API 调试（当前仅开放上传）
+### 需先启动服务：http://127.0.0.1:8000
+@baseUrl = http://127.0.0.1:8000
+
+### 健康检查
+GET {{baseUrl}}/health
+
+### 上传录音（请改成本地真实音频路径）
+# @name upload
+POST {{baseUrl}}/v1/recordings
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="file"; filename="demo.mp3"
+Content-Type: audio/mpeg
+
+< ./uploads/demo.mp3
+------Boundary--
+
+### 从上传响应取出 id
+@recordingId = {{upload.response.body.recording_id}}
+@taskId = {{upload.response.body.task_id}}
+
