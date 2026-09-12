@@ -1,3 +1,9 @@
 *
 !.gitignore
+!README.md
 !short.wav
+!valid/
+!valid/**
+!invalid/
+!invalid/**
+invalid/too_large.*
