@@ -10,9 +10,13 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    """应用配置：默认值在此定义；可用 .env / 环境变量覆盖同名字段。"""
+    """应用配置。
 
-    # ---- App ----
+    优先顺序：进程环境变量 > 仓库根 ``.env`` > 下方兜底默认值。
+    推荐配置见 ``.env.example``（复制为 ``.env`` 后修改）；密钥勿提交仓库。
+    """
+
+    # ---- App（路径类兜底相对仓库根，避免写死本机绝对路径）----
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
     DEBUG: bool = False
@@ -23,8 +27,10 @@ class Settings(BaseSettings):
     LOG_MAX_BYTES: int = 10_485_760
     LOG_BACKUP_COUNT: int = 5
 
-    # ---- Database ----
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/recording_transcription"
+    # ---- Database（与 compose 宿主机映射 5433 对齐；容器内由 compose 覆盖）----
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/recording_transcription"
+    )
     POOL_SIZE: int = 10
     POOL_TIMEOUT: float = 10.0
 
@@ -33,7 +39,7 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 50
     ALLOWED_EXTENSIONS: str = "wav,mp3,m4a,aac"
 
-    # ---- LLM 摘要 ----
+    # ---- LLM（Key 默认空；模型 URL 可由 .env 覆盖）----
     LLM_PROVIDER: str = "openai_compatible"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     LLM_API_KEY: str = ""
@@ -42,7 +48,7 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 512
     LLM_MAX_RETRIES: int = 3
 
-    # ---- Worker ----
+    # ---- Worker（无 Key 时请在 .env 设 WORKER_ALLOW_MOCK_LLM=true）----
     WORKER_MAX_CONCURRENCY: int = 3
     WORKER_MAX_BATCH_SIZE: int = 50
     WORKER_LEASE_SECONDS: int = 300
@@ -60,7 +66,11 @@ class Settings(BaseSettings):
     # ---- 派生配置 ----
     @property
     def allowed_ext_set(self) -> set[str]:
-        return {f".{e.strip().lower().lstrip('.')}" for e in self.ALLOWED_EXTENSIONS.split(",") if e.strip()}
+        return {
+            f".{e.strip().lower().lstrip('.')}"
+            for e in self.ALLOWED_EXTENSIONS.split(",")
+            if e.strip()
+        }
 
     @property
     def max_file_size_bytes(self) -> int:

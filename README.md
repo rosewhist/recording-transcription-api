@@ -35,9 +35,7 @@ python -m venv .venv
 pip install -r requirements.txt
 # 跑测试时：pip install -r requirements-dev.txt
 cp .env.example .env
-# 启动 Postgres（可用上面的 compose 只起 db）后设置 DATABASE_URL
-# DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/recording_transcription
-# 填写 LLM_API_KEY 后摘要走真实 LLM；不填则需 WORKER_ALLOW_MOCK_LLM=true
+# 编辑 .env：DATABASE_URL 默认已指向宿主机 5433；填写 LLM_API_KEY 走真实摘要
 
 alembic upgrade head
 uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
@@ -150,13 +148,14 @@ data: {"message":"..."}
 
 ## 环境变量（常用）
 
-见 `.env.example` 与 `api/config/settings.py`。
+配置优先级：**环境变量 > 仓库根 `.env` > `settings.py` 兜底**。  
+完整推荐项见 [`.env.example`](.env.example)；复制为 `.env` 后按需修改（`.env` 勿提交）。
 
 | 变量 | 说明 |
 |------|------|
-| `DATABASE_URL` | `postgresql+asyncpg://...` |
+| `DATABASE_URL` | 本地默认宿主机 `5433`；Docker 内由 compose 覆盖为 `db:5432` |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 摘要模型；**有 Key 即走真实 LLM** |
-| `WORKER_ALLOW_MOCK_LLM` | 仅无 Key 时的占位摘要（含 SSE mock 流）；有 Key 时忽略 |
+| `WORKER_ALLOW_MOCK_LLM` | 仅无 Key 时的占位摘要（含 SSE mock 流）；有 Key 时 worker 仍用真实模型 |
 | `WORKER_MAX_CONCURRENCY` / `WORKER_LEASE_SECONDS` | 并发与租约 |
 | `LOG_JSON` / `LOG_LEVEL` | 日志 |
 
