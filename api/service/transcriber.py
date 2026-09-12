@@ -2,23 +2,34 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import time
+from pathlib import Path
 from typing import Optional, Union
 from uuid import UUID
 
 from api.core.logger import get_logger
+from api.service.mock_transcripts import TRANSCRIPT_TEMPLATES
 
 logger = get_logger(__name__)
 
 TaskId = Union[UUID, str]
 
 
+def _pick_transcript(*, file_path: str, task_id: Optional[TaskId]) -> str:
+    """按 task_id+file_path 稳定选择模板，保证同任务重试文案一致。"""
+    seed = f"{task_id or ''}:{file_path}".encode("utf-8")
+    idx = int(hashlib.sha256(seed).hexdigest(), 16) % len(TRANSCRIPT_TEMPLATES)
+    body = TRANSCRIPT_TEMPLATES[idx]
+    return f"【模拟转写】{body}（来源: {Path(file_path).name}）"
+
+
 class TranscriberService:
     """根据音频文件路径生成转写文本。
 
     当前为 need.txt 要求的 Mock ASR：
-    随机耗时 5~15 秒，约 20% 失败率。
+    随机耗时 5~15 秒，约 20% 失败率；文案见 ``mock_transcripts``。
     """
 
     def __init__(
@@ -52,10 +63,7 @@ class TranscriberService:
                 f"ASR Mock 失败 (约 {int(self.fail_rate * 100)}% 概率)"
             )
 
-        transcript = (
-            f"【模拟转写】录音文件 {file_path}。"
-            "会议讨论了项目进度、风险与下一步待办，参会人确认了时间节点。"
-        )
+        transcript = _pick_transcript(file_path=file_path, task_id=task_id)
         elapsed = time.perf_counter() - t0
         logger.info(
             "[task=%s] ASR 转写完成，file=%s，文本长度: %d 字，耗时: %.1fs",
