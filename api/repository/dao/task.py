@@ -1,12 +1,11 @@
 """Task table model and DAO (PostgreSQL via SQLModel)."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, bindparam, text
+from sqlalchemy import Column, DateTime, Index, and_, case, func, or_, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel, delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -19,12 +18,19 @@ __all__ = [
     "TaskStatus",
 ]
 
-# Prefer SQL-side UTC so lease / retry clocks match worker dispatch SQL.
-_SQL_UTC_NOW = "timezone('utc', now())"
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _sql_utc_now():
+    """SQL-side UTC so lease / retry clocks match across worker paths."""
+    return func.timezone("utc", func.now())
+
+
+def _make_interval_secs(seconds):
+    # SQLAlchemy 2.0.x Function does not accept make_interval(secs=...); use positionals.
+    return func.make_interval(0, 0, 0, 0, 0, 0, seconds)
 
 
 class Task(SQLModel, table=True):
@@ -125,37 +131,37 @@ class TaskDao:
         if limit <= 0:
             return []
 
-        sql = text(
-            f"""
-            WITH locked AS (
-                SELECT id
-                FROM tasks
-                WHERE status = 'pending'
-                  AND next_retry_at <= {_SQL_UTC_NOW}
-                ORDER BY created_at ASC
-                LIMIT :limit
-                FOR UPDATE SKIP LOCKED
+        utc_now = _sql_utc_now()
+
+        # Hold row locks until the surrounding transaction commits/rolls back.
+        pick_stmt = (
+            select(Task.id)
+            .where(
+                Task.status == TaskStatus.PENDING.value,
+                Task.next_retry_at <= utc_now,
             )
-            UPDATE tasks t
-            SET status           = 'transcribing',
-                locked_by        = :worker_id,
-                lease_expires_at = {_SQL_UTC_NOW}
-                    + make_interval(secs => :lease_seconds),
-                updated_at       = {_SQL_UTC_NOW}
-            FROM locked
-            WHERE t.id = locked.id
-            RETURNING t.id
-            """
+            .order_by(Task.created_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "limit": limit,
-                "worker_id": worker_id,
-                "lease_seconds": lease_seconds,
-            },
+        task_ids = list(await self.session.scalars(pick_stmt))
+        if not task_ids:
+            return []
+
+        claim_stmt = (
+            update(Task)
+            .where(Task.id.in_(task_ids))
+            .values(
+                status=TaskStatus.TRANSCRIBING.value,
+                locked_by=worker_id,
+                lease_expires_at=utc_now + _make_interval_secs(lease_seconds),
+                updated_at=utc_now,
+            )
+            .returning(Task.id)
+            .execution_options(synchronize_session=False)
         )
-        return [row[0] for row in result.fetchall()]
+        result = await self.session.execute(claim_stmt)
+        return list(result.scalars().all())
 
     async def renew_lease(
         self,
@@ -165,24 +171,17 @@ class TaskDao:
         lease_seconds: int,
     ) -> bool:
         """Extend lease with SQL UTC clock. Returns False if lock is gone."""
-        sql = text(
-            f"""
-            UPDATE tasks
-            SET lease_expires_at = {_SQL_UTC_NOW}
-                    + make_interval(secs => :lease_seconds),
-                updated_at = {_SQL_UTC_NOW}
-            WHERE id = :task_id
-              AND locked_by = :worker_id
-            """
+        utc_now = _sql_utc_now()
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.locked_by == worker_id)
+            .values(
+                lease_expires_at=utc_now + _make_interval_secs(lease_seconds),
+                updated_at=utc_now,
+            )
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "task_id": task_id,
-                "worker_id": worker_id,
-                "lease_seconds": lease_seconds,
-            },
-        )
+        result = await self.session.execute(stmt)
         return bool(result.rowcount)
 
     async def mark_summarizing(
@@ -192,24 +191,17 @@ class TaskDao:
         worker_id: str,
         transcript: str,
     ) -> bool:
-        sql = text(
-            f"""
-            UPDATE tasks
-            SET status = 'summarizing',
-                transcript = :transcript,
-                updated_at = {_SQL_UTC_NOW}
-            WHERE id = :task_id
-              AND locked_by = :worker_id
-            """
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.locked_by == worker_id)
+            .values(
+                status=TaskStatus.SUMMARIZING.value,
+                transcript=transcript,
+                updated_at=_sql_utc_now(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "task_id": task_id,
-                "worker_id": worker_id,
-                "transcript": transcript,
-            },
-        )
+        result = await self.session.execute(stmt)
         return bool(result.rowcount)
 
     async def mark_done(
@@ -219,27 +211,20 @@ class TaskDao:
         worker_id: str,
         summary: dict[str, Any],
     ) -> bool:
-        sql = text(
-            f"""
-            UPDATE tasks
-            SET status = 'done',
-                summary = CAST(:summary AS jsonb),
-                locked_by = NULL,
-                lease_expires_at = NULL,
-                error_msg = NULL,
-                updated_at = {_SQL_UTC_NOW}
-            WHERE id = :task_id
-              AND locked_by = :worker_id
-            """
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.locked_by == worker_id)
+            .values(
+                status=TaskStatus.DONE.value,
+                summary=summary,
+                locked_by=None,
+                lease_expires_at=None,
+                error_msg=None,
+                updated_at=_sql_utc_now(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "task_id": task_id,
-                "worker_id": worker_id,
-                "summary": json.dumps(summary, ensure_ascii=False),
-            },
-        )
+        result = await self.session.execute(stmt)
         return bool(result.rowcount)
 
     async def mark_failure(
@@ -251,70 +236,61 @@ class TaskDao:
         max_retries: int,
     ) -> Optional[tuple[int, str]]:
         """Bump retry_count; return (retry_count, status) or None if not locked."""
-        sql = text(
-            f"""
-            UPDATE tasks AS t
-            SET
-                retry_count = x.new_count,
-                error_msg = :error_msg,
-                locked_by = NULL,
-                lease_expires_at = NULL,
-                updated_at = {_SQL_UTC_NOW},
-                status = CASE
-                    WHEN x.new_count <= :max_retries THEN 'pending'
-                    ELSE 'failed'
-                END,
-                next_retry_at = CASE
-                    WHEN x.new_count <= :max_retries THEN
-                        {_SQL_UTC_NOW}
-                        + (power(2, x.new_count)::text || ' seconds')::interval
-                    ELSE t.next_retry_at
-                END
-            FROM (
-                SELECT id, retry_count + 1 AS new_count
-                FROM tasks
-                WHERE id = :task_id
-                  AND locked_by = :worker_id
-            ) AS x
-            WHERE t.id = x.id
-            RETURNING t.retry_count, t.status
-            """
+        utc_now = _sql_utc_now()
+        new_count = Task.retry_count + 1
+        can_retry = new_count <= max_retries
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.locked_by == worker_id)
+            .values(
+                retry_count=new_count,
+                error_msg=(error_msg or "")[:1000],
+                locked_by=None,
+                lease_expires_at=None,
+                updated_at=utc_now,
+                status=case(
+                    (can_retry, TaskStatus.PENDING.value),
+                    else_=TaskStatus.FAILED.value,
+                ),
+                next_retry_at=case(
+                    (
+                        can_retry,
+                        utc_now + _make_interval_secs(func.power(2, new_count)),
+                    ),
+                    else_=Task.next_retry_at,
+                ),
+            )
+            .returning(Task.retry_count, Task.status)
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "task_id": task_id,
-                "worker_id": worker_id,
-                "error_msg": (error_msg or "")[:1000],
-                "max_retries": max_retries,
-            },
-        )
-        row = result.fetchone()
+        result = await self.session.execute(stmt)
+        row = result.first()
         if row is None:
             return None
         return int(row[0]), str(row[1])
 
     async def requeue_failed(self, task_id: UUID) -> Optional[Task]:
         """Atomically move failed → pending for manual retry; None if not failed."""
-        sql = text(
-            f"""
-            UPDATE tasks
-            SET status = 'pending',
-                retry_count = 0,
-                error_msg = NULL,
-                transcript = NULL,
-                summary = NULL,
-                locked_by = NULL,
-                lease_expires_at = NULL,
-                next_retry_at = {_SQL_UTC_NOW},
-                updated_at = {_SQL_UTC_NOW}
-            WHERE id = :task_id
-              AND status = 'failed'
-            RETURNING id
-            """
+        utc_now = _sql_utc_now()
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.status == TaskStatus.FAILED.value)
+            .values(
+                status=TaskStatus.PENDING.value,
+                retry_count=0,
+                error_msg=None,
+                transcript=None,
+                summary=None,
+                locked_by=None,
+                lease_expires_at=None,
+                next_retry_at=utc_now,
+                updated_at=utc_now,
+            )
+            .returning(Task.id)
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(sql, {"task_id": task_id})
-        row = result.fetchone()
+        result = await self.session.execute(stmt)
+        row = result.first()
         if row is None:
             return None
         return await self.get_by_id(row[0])
@@ -327,52 +303,33 @@ class TaskDao:
         error_msg: str,
     ) -> int:
         """Reset expired (and optionally this worker's) in-flight tasks to pending."""
+        utc_now = _sql_utc_now()
+        lease_expired = and_(
+            Task.lease_expires_at.is_not(None),
+            Task.lease_expires_at < utc_now,
+        )
         if include_own_locks:
-            sql = text(
-                f"""
-                UPDATE tasks
-                SET status = 'pending',
-                    error_msg = :error_msg,
-                    next_retry_at = {_SQL_UTC_NOW},
-                    locked_by = NULL,
-                    lease_expires_at = NULL,
-                    updated_at = {_SQL_UTC_NOW}
-                WHERE status IN :statuses
-                  AND (
-                    locked_by = :worker_id
-                    OR (
-                        lease_expires_at IS NOT NULL
-                        AND lease_expires_at < {_SQL_UTC_NOW}
-                    )
-                  )
-                """
-            ).bindparams(bindparam("statuses", expanding=True))
-            params: dict[str, Any] = {
-                "error_msg": error_msg,
-                "worker_id": worker_id,
-                "statuses": list(IN_FLIGHT_STATUS_VALUES),
-            }
+            owner_filter = or_(Task.locked_by == worker_id, lease_expired)
         else:
-            sql = text(
-                f"""
-                UPDATE tasks
-                SET status = 'pending',
-                    error_msg = :error_msg,
-                    next_retry_at = {_SQL_UTC_NOW},
-                    locked_by = NULL,
-                    lease_expires_at = NULL,
-                    updated_at = {_SQL_UTC_NOW}
-                WHERE status IN :statuses
-                  AND lease_expires_at IS NOT NULL
-                  AND lease_expires_at < {_SQL_UTC_NOW}
-                """
-            ).bindparams(bindparam("statuses", expanding=True))
-            params = {
-                "error_msg": error_msg,
-                "statuses": list(IN_FLIGHT_STATUS_VALUES),
-            }
+            owner_filter = lease_expired
 
-        result = await self.session.execute(sql, params)
+        stmt = (
+            update(Task)
+            .where(
+                Task.status.in_(IN_FLIGHT_STATUS_VALUES),
+                owner_filter,
+            )
+            .values(
+                status=TaskStatus.PENDING.value,
+                error_msg=error_msg,
+                next_retry_at=utc_now,
+                locked_by=None,
+                lease_expires_at=None,
+                updated_at=utc_now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
         return int(result.rowcount or 0)
 
     async def reset_aborted(
@@ -384,30 +341,23 @@ class TaskDao:
     ) -> int:
         if not task_ids:
             return 0
-        sql = text(
-            f"""
-            UPDATE tasks
-            SET status = 'pending',
-                error_msg = :error_msg,
-                next_retry_at = {_SQL_UTC_NOW},
-                locked_by = NULL,
-                lease_expires_at = NULL,
-                updated_at = {_SQL_UTC_NOW}
-            WHERE id IN :task_ids
-              AND status IN :statuses
-              AND locked_by = :worker_id
-            """
-        ).bindparams(
-            bindparam("task_ids", expanding=True),
-            bindparam("statuses", expanding=True),
+        utc_now = _sql_utc_now()
+        stmt = (
+            update(Task)
+            .where(
+                Task.id.in_(list(task_ids)),
+                Task.status.in_(IN_FLIGHT_STATUS_VALUES),
+                Task.locked_by == worker_id,
+            )
+            .values(
+                status=TaskStatus.PENDING.value,
+                error_msg=error_msg,
+                next_retry_at=utc_now,
+                locked_by=None,
+                lease_expires_at=None,
+                updated_at=utc_now,
+            )
+            .execution_options(synchronize_session=False)
         )
-        result = await self.session.execute(
-            sql,
-            {
-                "task_ids": list(task_ids),
-                "statuses": list(IN_FLIGHT_STATUS_VALUES),
-                "worker_id": worker_id,
-                "error_msg": error_msg,
-            },
-        )
+        result = await self.session.execute(stmt)
         return int(result.rowcount or 0)
