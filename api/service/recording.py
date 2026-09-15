@@ -18,6 +18,7 @@ from api.domain.exceptions import (
     TaskNotFoundError,
 )
 from api.repository.dao import Recording, Task
+from api.repository.dao.task_types import TaskStatus
 from api.repository.recording import RecordingRepository
 from api.service.summarizer import SummarizerService
 from api.utils import file as file_utils
@@ -195,12 +196,13 @@ class RecordingService:
                 raise RecordingNotFoundError(f"录音不存在: {recording_id}")
             task = _require_task(task)
 
-            # Reuse: replay the stored summary without calling the LLM again.
-            # Invariant: summary is only persisted once the task reaches done, so
-            # its presence implies a completed pipeline. Revisit if summary ever
-            # gets written mid-run.
+            # 复用：回放已存摘要，不再调用 LLM。
+            # 不变量：``tasks.summary`` 只由 ``mark_done`` 写入（``requeue_failed``
+            # 清空），因此「有摘要」等价于「流水线已完成」——与详情接口暴露结果的
+            # 条件一致。这里显式再校验 done，使两个接口在任何写入路径下都不会出现
+            # 「SSE 给了摘要、详情却说没有」的分歧。
             existing_summary = task.summary or None
-            if existing_summary is not None:
+            if existing_summary is not None and task.status == TaskStatus.DONE.value:
                 logger.info(
                     "复用已存摘要", event="summary.reuse", task_id=str(task.id)
                 )
@@ -235,8 +237,10 @@ class RecordingService:
     ) -> AsyncIterator[tuple[str, Any]]:
         """Yield SSE ``(event, payload)`` pairs for the recording's summary.
 
-        Reuses the stored summary when present (no LLM call); otherwise streams
-        a fresh summary and writes it back so later reads see the same result.
+        Reuses the stored summary when the task completed (no LLM call); otherwise
+        streams a freshly generated summary **without persisting it** —
+        ``tasks.summary`` stays owned by the pipeline, so a task that has not
+        reached ``done`` never holds a result the detail endpoint would hide.
         """
         if ctx.existing_summary is not None:
             async for event in self._replay_stored_summary(ctx.existing_summary):
@@ -248,12 +252,8 @@ class RecordingService:
             yield ("error", "LLM is not configured")
             return
 
-        persisted = False
-        async for name, payload in self.summarizer.summarize_stream(ctx.transcript):
-            if name == "done" and not persisted and isinstance(payload, dict):
-                persisted = True
-                await self._persist_streamed_summary(ctx.task_id, payload)
-            yield name, payload
+        async for event in self.summarizer.summarize_stream(ctx.transcript):
+            yield event
 
     async def _replay_stored_summary(
         self, summary: dict[str, Any]
@@ -263,25 +263,3 @@ class RecordingService:
         for i in range(0, len(raw), _REPLAY_CHUNK_SIZE):
             yield ("delta", raw[i : i + _REPLAY_CHUNK_SIZE])
         yield ("done", summary)
-
-    async def _persist_streamed_summary(
-        self, task_id: UUID, summary: dict[str, Any]
-    ) -> None:
-        """Best-effort writeback of an SSE-generated summary (never overwrites)."""
-        with log_context(task_id=task_id):
-            try:
-                saved = await self.repo.set_task_summary_if_absent(
-                    task_id, summary=summary
-                )
-            except Exception:
-                logger.opt(exception=True).warning(
-                    "SSE 摘要回写失败（不影响流式响应）",
-                    event="summary.writeback.failed",
-                )
-                return
-            if saved:
-                logger.info("SSE 摘要已回写数据库", event="summary.writeback")
-            else:
-                logger.info(
-                    "SSE 摘要未回写（已存在摘要）", event="summary.writeback.skipped"
-                )

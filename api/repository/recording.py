@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -80,18 +80,6 @@ class RecordingRepository:
                 return None, None
             task = await TaskDao(session).get_by_recording(recording.id)
             return recording, task
-
-    async def set_task_summary_if_absent(
-        self, task_id: UUID, *, summary: dict[str, Any]
-    ) -> bool:
-        """Best-effort writeback of an SSE-generated summary (never overwrites)."""
-        async with _session() as session:
-            saved = await TaskDao(session).set_summary_if_absent(
-                task_id, summary=summary
-            )
-            if saved:
-                await session.commit()
-            return saved
 
     async def list_page(
         self, *, page: int, page_size: int

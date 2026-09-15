@@ -227,27 +227,6 @@ class TaskDao:
         result = await self.session.execute(stmt)
         return bool(result.rowcount)
 
-    async def set_summary_if_absent(
-        self,
-        task_id: UUID,
-        *,
-        summary: dict[str, Any],
-    ) -> bool:
-        """Persist an out-of-band summary (e.g. SSE) only if none exists yet.
-
-        Guarded by ``summary IS NULL`` so a concurrent worker write wins and we
-        never clobber the pipeline's authoritative result.
-        """
-        stmt = (
-            update(Task)
-            .where(Task.id == task_id, Task.summary.is_(None))
-            .values(summary=summary, updated_at=_sql_utc_now())
-            .returning(Task.id)
-            .execution_options(synchronize_session=False)
-        )
-        result = await self.session.execute(stmt)
-        return result.first() is not None
-
     async def mark_failure(
         self,
         task_id: UUID,

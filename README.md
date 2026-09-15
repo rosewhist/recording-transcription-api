@@ -102,7 +102,7 @@ python -m pytest -v
 | GET | /v1/recordings | 录音列表，分页（`page`/`page_size`），按创建时间倒序，含任务状态 |
 | GET | /v1/recordings/{id} | 录音详情；`done` 时含 `transcript` 与 `summary` |
 | DELETE | /v1/recordings/{id} | 删除录音、关联任务与本地文件（`204`） |
-| GET | /v1/recordings/{id}/summary/stream | SSE 流式摘要（需已有 `transcript`）；已存摘要直接复用，新生成的回写数据库 |
+| GET | /v1/recordings/{id}/summary/stream | SSE 流式摘要（需已有 `transcript`）；任务 `done` 且已存摘要时直接复用回放，否则实时生成（不落库） |
 | GET | /v1/tasks/{task_id} | 查询任务状态与结果字段 |
 | POST | /v1/tasks/{task_id}/retry | 仅 `failed` 可重试；已排队/处理中幂等返回 |
 
@@ -167,7 +167,7 @@ data: {"message":"..."}
 
 - 未提供公网部署地址（本地 / Docker 一键启动已支持）
 - Mock ASR 失败率/耗时为随机，联调时任务可能多次自动重试后才 `done`
-- SSE 摘要与 worker 流水线**共用同一份 `summary`**：已存则直接复用回放（不再调用 LLM），新生成的回写数据库（`summary IS NULL` 守卫，不会覆盖 worker 结果）；首个摘要生成期间并发多个 SSE 请求会各自调一次 LLM（守卫保证只有一次落库），单副本下如需去重可加按 task_id 的进程内锁
+- SSE 摘要与 worker 流水线共用同一份 `summary`，但**只有流水线会写它**：`tasks.summary` 仅由 `mark_done` 写入、`requeue_failed` 清空，因此「库里有摘要」等价于「任务已 `done`」。SSE 只在 `done` 时复用回放，其余情况实时生成且不回写——这样它和详情接口（仅 `done` 暴露结果）对同一条数据的判断始终一致。代价是转写完成但尚未 `done` 期间，每次 SSE 请求都会各自调用一次 LLM（若需去重，可加按 `task_id` 的进程内单飞锁）
 - 多 API 副本时写同一日志文件需改用并发安全 handler（当前单进程 compose 足够）
 - `WORKER_MAX_RETRIES=3` 表示失败计数达到 3 仍回 `pending`，第 4 次失败置 `failed`（初始尝试 + 最多 3 次再入队）
 - `users` 表在初始迁移中预留，鉴权不在考察范围，业务未使用
