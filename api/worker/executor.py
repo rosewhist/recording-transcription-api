@@ -202,9 +202,13 @@ class TaskExecutor:
                 raise LeaseLostError("lease lost during processing")
             return work.result()
         finally:
+            # 外部取消（优雅关闭）会从 ``await asyncio.wait`` 处穿出：在途的 ASR/LLM
+            # 调用必须一并取消，否则它会继续跑完并计费，还会变成无人回收的孤儿任务。
             if not watcher.done():
                 watcher.cancel()
-                await asyncio.gather(watcher, return_exceptions=True)
+            if not work.done():
+                work.cancel()
+            await asyncio.gather(watcher, work, return_exceptions=True)
 
     async def _handle_task_failure(self, task_id: UUID, error_msg: str) -> None:
         async with task_tx(self.db_session_factory) as dao:
