@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from uuid import UUID
@@ -23,6 +25,16 @@ from api.worker import TaskWorker
 logger = get_logger(__name__)
 
 _MAX_PAGE_SIZE = 100
+_REPLAY_CHUNK_SIZE = 16
+
+
+@dataclass
+class SummaryStreamContext:
+    """Resolved inputs for one SSE summary stream (validated up-front)."""
+
+    task_id: UUID
+    transcript: str
+    existing_summary: Optional[dict[str, Any]]
 
 
 def _require_task(task: Optional[Task]) -> Task:
@@ -174,12 +186,35 @@ class RecordingService:
                 file_path,
             )
 
-    async def prepare_summary_stream(self, recording_id: UUID) -> str:
-        """Validate recording/task/LLM; return transcript for streaming."""
+    async def prepare_summary_stream(self, recording_id: UUID) -> SummaryStreamContext:
+        """Validate recording/task; resolve reuse vs. generate.
+
+        Raises before the SSE response starts so the client still gets a real
+        status code (404/400/503).
+        """
         recording, task = await self.repo.get_by_id(recording_id)
         if recording is None:
             raise RecordingNotFoundError(f"录音不存在: {recording_id}")
         task = _require_task(task)
+
+        # Reuse: replay the stored summary without calling the LLM again.
+        # Invariant: summary is only persisted once the task reaches done, so
+        # its presence implies a completed pipeline. Revisit if summary ever
+        # gets written mid-run.
+        existing_summary = task.summary or None
+        if existing_summary is not None:
+            logger.info(
+                "复用已存摘要，recording_id=%s，task_id=%s",
+                recording.id,
+                task.id,
+            )
+            return SummaryStreamContext(
+                task_id=task.id,
+                transcript=task.transcript or "",
+                existing_summary=existing_summary,
+            )
+
+        # Generate: require a transcript and a usable LLM.
         transcript = (task.transcript or "").strip()
         if not transcript:
             raise InvalidRequestError("尚无转写文本，无法流式摘要")
@@ -193,13 +228,60 @@ class RecordingService:
             task.id,
             len(transcript),
         )
-        return transcript
+        return SummaryStreamContext(
+            task_id=task.id,
+            transcript=transcript,
+            existing_summary=None,
+        )
 
     async def stream_summary(
-        self, recording_id: UUID
+        self, ctx: SummaryStreamContext
     ) -> AsyncIterator[tuple[str, Any]]:
-        """Yield SSE event payloads for summary generation (does not write DB)."""
-        transcript = await self.prepare_summary_stream(recording_id)
-        assert self.summarizer is not None
-        async for event in self.summarizer.summarize_stream(transcript):
-            yield event
+        """Yield SSE ``(event, payload)`` pairs for the recording's summary.
+
+        Reuses the stored summary when present (no LLM call); otherwise streams
+        a fresh summary and writes it back so later reads see the same result.
+        """
+        if ctx.existing_summary is not None:
+            async for event in self._replay_stored_summary(ctx.existing_summary):
+                yield event
+            return
+
+        # Defensive; prepare_summary_stream already guarantees a summarizer here.
+        if self.summarizer is None:
+            yield ("error", "LLM is not configured")
+            return
+
+        persisted = False
+        async for name, payload in self.summarizer.summarize_stream(ctx.transcript):
+            if name == "done" and not persisted and isinstance(payload, dict):
+                persisted = True
+                await self._persist_streamed_summary(ctx.task_id, payload)
+            yield name, payload
+
+    async def _replay_stored_summary(
+        self, summary: dict[str, Any]
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Re-emit a stored summary as delta chunks followed by ``done``."""
+        raw = json.dumps(summary, ensure_ascii=False)
+        for i in range(0, len(raw), _REPLAY_CHUNK_SIZE):
+            yield ("delta", raw[i : i + _REPLAY_CHUNK_SIZE])
+        yield ("done", summary)
+
+    async def _persist_streamed_summary(
+        self, task_id: UUID, summary: dict[str, Any]
+    ) -> None:
+        """Best-effort writeback of an SSE-generated summary (never overwrites)."""
+        try:
+            saved = await self.repo.set_task_summary_if_absent(
+                task_id, summary=summary
+            )
+        except Exception:
+            logger.warning(
+                "[task=%s] SSE 摘要回写失败（不影响流式响应）", task_id, exc_info=True
+            )
+            return
+        if saved:
+            logger.info("[task=%s] SSE 摘要已回写数据库", task_id)
+        else:
+            logger.info("[task=%s] SSE 摘要未回写（已存在摘要）", task_id)

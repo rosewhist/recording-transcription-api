@@ -151,3 +151,23 @@ async def test_reset_aborted_empty_and_nonempty():
     compiled = _compile(session.execute.await_args.args[0])
     assert "UPDATE tasks" in compiled
     assert "locked_by" in compiled
+
+
+@pytest.mark.asyncio
+async def test_set_summary_if_absent_guards_on_null_summary():
+    task_id = uuid4()
+    session = MagicMock()
+    result = MagicMock()
+    result.first.return_value = (task_id,)
+    session.execute = AsyncMock(return_value=result)
+    dao = TaskDao(session)
+
+    assert await dao.set_summary_if_absent(task_id, summary={"t": 1}) is True
+    compiled = _compile(session.execute.await_args.args[0])
+    assert "UPDATE tasks" in compiled
+    assert "summary" in compiled
+    assert "IS NULL" in compiled.upper()
+    assert "RETURNING" in compiled.upper()
+
+    result.first.return_value = None
+    assert await dao.set_summary_if_absent(task_id, summary={"t": 2}) is False

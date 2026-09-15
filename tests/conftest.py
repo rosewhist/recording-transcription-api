@@ -52,6 +52,7 @@ def mock_repo() -> MagicMock:
     repo = MagicMock()
     repo.get_by_hash = AsyncMock(return_value=(None, None))
     repo.create_recording_and_task = AsyncMock()
+    repo.set_task_summary_if_absent = AsyncMock(return_value=True)
     return repo
 
 

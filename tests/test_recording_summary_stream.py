@@ -105,6 +105,7 @@ async def test_summary_stream_emits_error_event(
     assert "event: delta" in body
     assert "event: error" in body
     assert 'data: {"message": "llm timeout"}' in body
+    mock_repo.set_task_summary_if_absent.assert_not_awaited()
     _assert_no_repo_writes(mock_repo)
 
 
@@ -176,3 +177,63 @@ async def test_summary_stream_unavailable_when_cannot_stream(
 
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "service_unavailable"
+
+@pytest.mark.asyncio
+async def test_summary_stream_reuses_stored_summary(
+    client: AsyncClient,
+    mock_repo: MagicMock,
+    mock_summarizer: MagicMock,
+    sample_recording: Recording,
+):
+    stored = {"summary": "已存摘要", "key_points": ["k1"], "todos": ["t1"]}
+    task = _done_task(sample_recording)
+    task.summary = stored
+    mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
+    mock_summarizer.summarize_stream = MagicMock(
+        side_effect=AssertionError("LLM 不应在复用路径被调用")
+    )
+
+    resp = await client.get(f"/v1/recordings/{sample_recording.id}/summary/stream")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: delta" in body
+    assert "event: done" in body
+    assert f"data: {json.dumps(stored, ensure_ascii=False)}" in body
+    mock_summarizer.summarize_stream.assert_not_called()
+    mock_repo.set_task_summary_if_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_summary_stream_reuse_needs_no_llm(
+    client: AsyncClient,
+    mock_repo: MagicMock,
+    sample_recording: Recording,
+    recording_service: RecordingService,
+):
+    task = _done_task(sample_recording)
+    task.summary = {"summary": "已存", "key_points": [], "todos": []}
+    mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
+    recording_service.summarizer = None
+
+    resp = await client.get(f"/v1/recordings/{sample_recording.id}/summary/stream")
+
+    assert resp.status_code == 200
+    assert "event: done" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_summary_stream_writes_back_generated_summary(
+    client: AsyncClient,
+    mock_repo: MagicMock,
+    sample_recording: Recording,
+):
+    task = _done_task(sample_recording)  # 有 transcript、无已存摘要
+    mock_repo.get_by_id = AsyncMock(return_value=(sample_recording, task))
+
+    resp = await client.get(f"/v1/recordings/{sample_recording.id}/summary/stream")
+
+    assert resp.status_code == 200
+    mock_repo.set_task_summary_if_absent.assert_awaited_once_with(
+        task.id, summary=_DONE_PAYLOAD
+    )

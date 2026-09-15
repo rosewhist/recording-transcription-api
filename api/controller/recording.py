@@ -55,14 +55,12 @@ async def stream_recording_summary(
     request: Request,
     service: RecordingServiceDep,
 ):
-    """以 SSE 流式返回摘要生成过程（不写库）。"""
-    # Raise 404/400/503 before headers are flushed.
-    transcript = await service.prepare_summary_stream(recording_id)
-    summarizer = service.summarizer
-    assert summarizer is not None
+    """以 SSE 流式返回摘要：已存摘要直接复用，新生成的会回写数据库。"""
+    # Resolve reuse vs. generate (and raise 404/400/503) before headers flush.
+    ctx = await service.prepare_summary_stream(recording_id)
 
     async def event_source() -> AsyncIterator[str]:
-        async for name, payload in summarizer.summarize_stream(transcript):
+        async for name, payload in service.stream_summary(ctx):
             if await request.is_disconnected():
                 break
             if name == "delta":
