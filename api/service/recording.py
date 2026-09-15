@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,46 +73,59 @@ class RecordingService:
 
     async def upload(self, upload_file: UploadFile) -> tuple[Recording, Task, bool]:
         s = self.settings
-        filename, ext, content = await file_utils.validate_upload(
+        filename = upload_file.filename or ""
+        ext = file_utils.validate_extension(filename, allowed_ext=s.allowed_ext_set)
+        fmt = ext.lstrip(".") or "unknown"
+        logger.info("收到上传请求，文件=%s，格式=%s", filename, fmt)
+
+        staged = await file_utils.stage_upload(
             upload_file,
-            allowed_ext=s.allowed_ext_set,
+            ext=ext,
+            upload_dir=Path(s.UPLOAD_DIR),
             max_size_bytes=s.max_file_size_bytes,
             max_size_mb=s.MAX_FILE_SIZE_MB,
         )
-        fmt = ext.lstrip(".") or "unknown"
         logger.info(
-            "收到上传请求，文件=%s，大小=%s，格式=%s",
+            "上传已落盘，文件=%s，大小=%s，sha256=%s",
             filename,
-            _format_size_mb(len(content)),
-            fmt,
+            _format_size_mb(staged.size),
+            staged.sha256,
         )
 
-        file_hash = file_utils.compute_sha256(content)
-        recording, task = await self.repo.get_by_hash(file_hash)
-        if recording is not None:
-            task = _require_task(task)
-            _bind_task_for_logs(task)
+        # 先查重：命中则丢弃暂存件，不产生垃圾文件（幂等）。
+        existing_recording, existing_task = await self.repo.get_by_hash(staged.sha256)
+        if existing_recording is not None:
+            await asyncio.to_thread(staged.discard)
+            existing_task = _require_task(existing_task)
+            _bind_task_for_logs(existing_task)
             logger.info(
                 "上传命中幂等，recording_id=%s，task_id=%s，状态=%s",
-                recording.id,
-                task.id,
-                task.status,
+                existing_recording.id,
+                existing_task.id,
+                existing_task.status,
             )
-            return recording, task, False
+            return existing_recording, existing_task, False
 
-        saved_path = await file_utils.save_bytes_async(
-            content, ext, upload_dir=Path(s.UPLOAD_DIR)
-        )
+        # 未命中：原子提交到最终路径，再落库；落库失败则回滚文件。
+        try:
+            saved_path = await asyncio.to_thread(staged.commit)
+        except BaseException:  # 含 CancelledError：请求中断也必须清掉 .part
+            await asyncio.to_thread(staged.discard)
+            raise
+
         keep_file = False
         try:
             recording, task, created = await self.repo.create_recording_and_task(
                 file_name=filename,
                 file_path=saved_path,
-                file_size=len(content),
-                file_hash=file_hash,
+                file_size=staged.size,
+                file_hash=staged.sha256,
             )
             keep_file = created
         finally:
+            # created=False = 并发同哈希竞态中落败（repo 未插入新记录），
+            # 本请求提交的文件即孤儿，须删除；落库异常同理回滚。
+            # 依赖 repo 契约：created=False 时不得重复插入记录。
             if not keep_file:
                 await file_utils.remove_file_async(saved_path)
 

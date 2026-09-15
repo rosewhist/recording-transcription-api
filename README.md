@@ -134,6 +134,7 @@ data: {"message":"..."}
 - **队列**：DB 状态 + `SKIP LOCKED` 抢占，免额外部署 Redis。
 - **并发**：`WORKER_MAX_CONCURRENCY`（默认 3）。
 - **上传幂等**：基于文件 SHA-256 去重。
+- **上传落盘**：按 1MiB 分块流式写盘并增量计算 SHA-256，阻塞 I/O 走 `asyncio.to_thread`，避免整文件读入内存；幂等命中直接丢弃 `.part` 暂存件。
 - **日志**：关键路径 INFO/WARNING/ERROR；上传后绑定 `task-{id}`，可用 `X-Request-ID` / `task_id` 串生命周期。
 - **测试**：`tests/` 覆盖核心 HTTP 接口（mock 仓储）以及 Worker 状态机（mock ASR/LLM，不等待 5~15s）。
 
