@@ -95,3 +95,71 @@ async def test_stage_upload_rejects_empty_and_cleans_up(tmp_path: Path):
         )
 
     assert list(tmp_path.iterdir()) == []
+
+
+class _CancellingUpload:
+    """首轮返回数据，随后抛 ``CancelledError``（模拟客户端中途断连）。"""
+
+    def __init__(self, first: bytes) -> None:
+        self._first = first
+        self.calls = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        self.calls += 1
+        if self.calls == 1:
+            return self._first
+        raise asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+async def test_stage_upload_cancelled_midway_cleans_up_part_file(tmp_path: Path):
+    """取消（而非普通异常）也必须清理 ``.part``：断连是这里最常见的失败。"""
+    upload = _CancellingUpload(b"x" * 8)
+
+    with pytest.raises(asyncio.CancelledError):
+        await stage_upload(
+            upload,
+            ext=".mp3",
+            upload_dir=tmp_path,
+            max_size_bytes=1000,
+            max_size_mb=1,
+            chunk_size=8,
+        )
+
+    assert upload.calls == 2  # 确实是在写入之后被取消的
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_discard_is_idempotent(tmp_path: Path):
+    """``discard`` 可重复调用（删除是 cleanup 路径，不该因文件已删而报错）。"""
+    staged = await stage_upload(
+        _upload(b"abc"),
+        ext=".mp3",
+        upload_dir=tmp_path,
+        max_size_bytes=100,
+        max_size_mb=1,
+    )
+
+    await asyncio.to_thread(staged.discard)
+    await asyncio.to_thread(staged.discard)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_discard_after_commit_keeps_committed_file(tmp_path: Path):
+    """commit 之后 discard 是空操作，不能误删已经对外可见的最终文件。"""
+    staged = await stage_upload(
+        _upload(b"abc"),
+        ext=".mp3",
+        upload_dir=tmp_path,
+        max_size_bytes=100,
+        max_size_mb=1,
+    )
+    final = Path(staged.commit())
+
+    await asyncio.to_thread(staged.discard)
+
+    assert final.exists()
+    assert final.read_bytes() == b"abc"
