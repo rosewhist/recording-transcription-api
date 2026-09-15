@@ -137,7 +137,7 @@ data: {"message":"..."}
 - **并发**：`WORKER_MAX_CONCURRENCY`（默认 3）。
 - **上传幂等**：基于文件 SHA-256 去重。
 - **上传落盘**：按 1MiB 分块流式写盘并增量计算 SHA-256，阻塞 I/O 走 `asyncio.to_thread`，避免整文件读入内存；幂等命中直接丢弃 `.part` 暂存件。
-- **日志**：关键路径 INFO/WARNING/ERROR；上传后绑定 `task-{id}`，可用 `X-Request-ID` / `task_id` 串生命周期。
+- **日志**：loguru 原生 + 扁平结构化单行 JSON（`LOG_JSON=false` 时为彩色文本）。每条含 `ts/level/logger/event/message`、进程级 `instance_id`（每条都有）与链路标识 `request_id`/`task_id`/`recording_id`/`worker_id`（`worker_id` 仅在处理任务时有值）；域字段归入 `extra`，异常归入 `error`。按 `task_id` 字段可一次捞出任务全生命周期，按 `instance_id` 可定位到具体实例。标准库 logging（uvicorn / sqlalchemy / openai）经 `InterceptHandler` 转发到同一 schema。
 - **测试**：`tests/` 覆盖核心 HTTP 接口（mock 仓储）以及 Worker 状态机（mock ASR/LLM，不等待 5~15s）。
 
 ## 已完成的加分项
@@ -161,7 +161,7 @@ data: {"message":"..."}
 | `WORKER_ALLOW_MOCK_LLM` | 仅无 Key 时的占位摘要（含 SSE mock 流）；有 Key 时 worker 仍用真实模型 |
 | `WORKER_MAX_CONCURRENCY` / `WORKER_LEASE_SECONDS` | 并发与租约 |
 | `WORKER_ID` / `WORKER_STATE_DIR` | worker 标识：显式固定，或持久化到 `WORKER_STATE_DIR`（默认 `.worker/`）以便重启复用 |
-| `LOG_JSON` / `LOG_LEVEL` | 日志 |
+| `LOG_JSON` / `LOG_LEVEL` / `LOG_TO_FILE` | 日志：JSON 或彩色文本、级别、是否写文件（轮转由 `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` 控制） |
 
 ## 已知问题与未完成项
 

@@ -53,7 +53,11 @@ def _load_or_create(state_path: Path) -> Optional[str]:
     except FileNotFoundError:
         existing = ""
     except OSError:
-        logger.warning("读取 worker 标识文件失败: %s", state_path, exc_info=True)
+        logger.opt(exception=True).warning(
+            "读取 worker 标识文件失败",
+            event="worker.identity.read_failed",
+            path=str(state_path),
+        )
         return None
 
     if existing:
@@ -66,10 +70,10 @@ def _load_or_create(state_path: Path) -> Optional[str]:
         tmp_path.write_text(new_id, encoding="utf-8")
         os.replace(tmp_path, state_path)
     except OSError:
-        logger.warning(
-            "写入 worker 标识文件失败: %s（重启后需等租约过期才能回收自身任务）",
-            state_path,
-            exc_info=True,
+        logger.opt(exception=True).warning(
+            "写入 worker 标识文件失败，重启后需等租约过期才能回收自身任务",
+            event="worker.identity.write_failed",
+            path=str(state_path),
         )
         return None
     return new_id
@@ -87,11 +91,18 @@ def resolve_worker_id(settings: Settings) -> str:
     state_path = Path(settings.WORKER_STATE_DIR) / _STATE_FILENAME
     persisted = _load_or_create(state_path)
     if persisted:
-        logger.info("worker 标识已持久化: %s（%s）", persisted, state_path)
+        logger.info(
+            "worker 标识已持久化",
+            event="worker.identity.persisted",
+            worker_id=persisted,
+            path=str(state_path),
+        )
         return persisted
 
     fallback = _new_worker_id()
     logger.warning(
-        "无法持久化 worker 标识，使用临时标识: %s（重启后需等租约过期）", fallback
+        "无法持久化 worker 标识，使用临时标识（重启后需等租约过期）",
+        event="worker.identity.ephemeral",
+        worker_id=fallback,
     )
     return fallback

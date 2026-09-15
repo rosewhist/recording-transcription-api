@@ -6,7 +6,7 @@ import time
 from typing import Optional
 from uuid import UUID
 
-from api.core.logger import bind_task_trace, get_logger, trace_id_var
+from api.core.logger import bind_task_id, get_logger, task_id_var
 from api.repository.dao.task_types import TaskStatus
 from api.worker.common import task_tx
 from api.worker.executor import TaskExecutor
@@ -69,10 +69,12 @@ class TaskDispatcher:
     async def recover_zombie_tasks(self, *, include_own_locks: bool = True) -> None:
         if include_own_locks:
             reason = "服务重启/租约过期，任务被中断，准备重试"
-            log_msg = "服务重启/租约过期，检测到 %d 个僵尸任务，已重置为 pending"
+            event = "worker.recover.zombie"
+            message = "服务重启/租约过期，重置僵尸任务为 pending"
         else:
             reason = "租约过期，任务被中断，准备重试"
-            log_msg = "周期回收：检测到 %d 个过期租约任务，已重置为 pending"
+            event = "worker.recover.expired_lease"
+            message = "周期回收：重置过期租约任务为 pending"
 
         async with task_tx(self.db_session_factory) as dao:
             n = await dao.reclaim_in_flight(
@@ -81,7 +83,7 @@ class TaskDispatcher:
                 error_msg=reason,
             )
         if n:
-            logger.warning(log_msg, n)
+            logger.warning(message, event=event, count=n)
 
     async def _dispatcher_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -97,9 +99,10 @@ class TaskDispatcher:
 
                 if task_ids:
                     logger.info(
-                        "派发器拉取到 %d 个任务，开始调度: %s",
-                        len(task_ids),
-                        [str(tid) for tid in task_ids],
+                        "派发器拉取到任务，开始调度",
+                        event="dispatcher.claimed",
+                        count=len(task_ids),
+                        task_ids=[str(tid) for tid in task_ids],
                     )
                     for task_id in task_ids:
                         self._schedule_task(task_id)
@@ -110,18 +113,18 @@ class TaskDispatcher:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("派发器异常")
+                logger.exception("派发器异常", event="dispatcher.error")
                 await self._interruptible_sleep(5.0)
 
     def _schedule_task(self, task_id: UUID) -> None:
         """Bind task-* trace into the child task context, then spawn executor."""
-        token = bind_task_trace(task_id)
+        token = bind_task_id(task_id)
         try:
             logger.info(
-                "[task=%s] 状态变更: %s -> %s",
-                task_id,
-                TaskStatus.PENDING.value,
-                TaskStatus.TRANSCRIBING.value,
+                "任务状态变更",
+                event="task.status_changed",
+                status_from=TaskStatus.PENDING.value,
+                status_to=TaskStatus.TRANSCRIBING.value,
             )
             key = str(task_id)
             t = asyncio.create_task(
@@ -133,7 +136,7 @@ class TaskDispatcher:
                 lambda _fut, tid=key: self.running_tasks.pop(tid, None)
             )
         finally:
-            trace_id_var.reset(token)
+            task_id_var.reset(token)
 
     async def _interruptible_sleep(self, seconds: float) -> None:
         try:
@@ -176,7 +179,9 @@ class TaskDispatcher:
                 )
                 if n:
                     logger.warning(
-                        "周期回收：检测到 %d 个过期租约任务，已重置为 pending", n
+                        "周期回收：重置过期租约任务为 pending",
+                        event="worker.recover.expired_lease",
+                        count=n,
                     )
             return await dao.claim_pending(
                 limit=limit,

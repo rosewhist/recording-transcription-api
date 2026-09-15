@@ -7,7 +7,7 @@ from uuid import UUID
 
 from api.config.settings import Settings, get_settings
 from api.core.db.db_connector import AsyncSessionFactory
-from api.core.logger import get_logger
+from api.core.logger import get_logger, set_worker_id
 from api.service.summarizer import SummarizerService
 from api.service.transcriber import TranscriberService
 from api.worker.dispatcher import TaskDispatcher
@@ -91,15 +91,16 @@ class TaskWorker:
         )
 
     async def start(self) -> None:
+        set_worker_id(self.worker_id)
         await self.dispatcher.start()
         self._started = True
         logger.info(
-            "TaskWorker[%s] 已启动，并发上限=%d，租约=%ds，回收间隔=%.0fs，mock_llm=%s",
-            self.worker_id,
-            self.max_concurrency,
-            self.lease_seconds,
-            self.dispatcher.reclaim_interval,
-            self.allow_mock_llm,
+            "TaskWorker 已启动",
+            event="worker.started",
+            max_concurrency=self.max_concurrency,
+            lease_seconds=self.lease_seconds,
+            reclaim_interval=self.dispatcher.reclaim_interval,
+            allow_mock_llm=self.allow_mock_llm,
         )
 
     async def stop(self, timeout_seconds: int = 30) -> None:
@@ -111,12 +112,14 @@ class TaskWorker:
 
         running = self.dispatcher.running_tasks
         if not running:
-            logger.info("TaskWorker[%s] 已优雅退出（无在途任务）。", self.worker_id)
+            logger.info("TaskWorker 已优雅退出（无在途任务）", event="worker.stopped")
             if self.summarizer is not None:
                 await self.summarizer.aclose()
             return
 
-        logger.info("正在等待 %d 个任务执行完毕...", len(running))
+        logger.info(
+            "正在等待在途任务执行完毕", event="worker.stopping", in_flight=len(running)
+        )
         _done, pending = await asyncio.wait(
             running.values(), timeout=timeout_seconds
         )
@@ -124,9 +127,10 @@ class TaskWorker:
         if pending:
             pending_ids = [tid for tid, t in running.items() if t in pending]
             logger.warning(
-                "有 %d 个任务超时未完成，强制取消并重置 DB: %s",
-                len(pending),
-                pending_ids,
+                "在途任务超时未完成，强制取消并重置 DB",
+                event="worker.shutdown_timeout",
+                pending=len(pending),
+                task_ids=pending_ids,
             )
             for t in pending:
                 t.cancel()
@@ -135,13 +139,15 @@ class TaskWorker:
 
         if self.summarizer is not None:
             await self.summarizer.aclose()
-        logger.info("TaskWorker[%s] 优雅关闭完成。", self.worker_id)
+        logger.info("TaskWorker 优雅关闭完成", event="worker.stopped")
 
     async def submit(self, task_id: UUID) -> None:
         """上传侧通知；唤醒派发器尽快拾取 pending。"""
         if not self._started:
             raise RuntimeError("TaskWorker 尚未启动")
-        logger.info("[task=%s] 已提交（等待 worker 轮询拾取）", task_id)
+        logger.info(
+            "任务已提交，等待 worker 拾取", event="task.submitted", task_id=str(task_id)
+        )
         self.dispatcher.wake()
 
     async def enqueue(self, task_id: UUID) -> None:

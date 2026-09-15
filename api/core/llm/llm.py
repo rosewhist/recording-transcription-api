@@ -123,19 +123,21 @@ class LLMSummarizer:
                 result_dict = self._parse_json_safely(raw_content)
                 validated = SummaryResult.model_validate(result_dict)
                 logger.debug(
-                    "LLM summarize ok attempt=%d chars=%d",
-                    attempt,
-                    len(raw_content),
+                    "LLM 摘要生成成功",
+                    event="llm.summarize.ok",
+                    attempt=attempt,
+                    chars=len(raw_content),
                 )
                 return validated
 
             except (LLMParseError, ValidationError) as e:
                 last_exception = e
                 logger.warning(
-                    "LLM summarize attempt %d/%d failed (parse/validate): %s",
-                    attempt,
-                    self.max_retries,
-                    e,
+                    "LLM 摘要解析/校验失败",
+                    event="llm.summarize.parse_error",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error={"type": type(e).__name__, "message": str(e)},
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(self._backoff_delay(attempt))
@@ -144,11 +146,12 @@ class LLMSummarizer:
                 last_exception = e
                 delay = self._rate_limit_delay(e, attempt)
                 logger.warning(
-                    "LLM summarize attempt %d/%d rate-limited, sleep %.1fs: %s",
-                    attempt,
-                    self.max_retries,
-                    delay,
-                    e,
+                    "LLM 限流，稍后重试",
+                    event="llm.summarize.rate_limited",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    sleep_seconds=delay,
+                    error={"type": type(e).__name__, "message": str(e)},
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(delay)
@@ -156,34 +159,44 @@ class LLMSummarizer:
             except (APITimeoutError, APIConnectionError) as e:
                 last_exception = e
                 logger.warning(
-                    "LLM summarize attempt %d/%d failed: %s",
-                    attempt,
-                    self.max_retries,
-                    e,
+                    "LLM 调用失败（超时/连接）",
+                    event="llm.summarize.retry",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error={"type": type(e).__name__, "message": str(e)},
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(self._backoff_delay(attempt))
 
             except APIStatusError as e:
                 if not _is_retriable_api_status(e):
-                    logger.exception("LLM summarize non-retriable HTTP error")
+                    logger.exception(
+                        "LLM 不可重试的 HTTP 错误",
+                        event="llm.summarize.failed",
+                        status=e.status_code,
+                    )
                     raise RuntimeError(f"LLM summarize failed: {e}") from e
                 last_exception = e
                 logger.warning(
-                    "LLM summarize attempt %d/%d failed (HTTP %s): %s",
-                    attempt,
-                    self.max_retries,
-                    e.status_code,
-                    e,
+                    "LLM HTTP 错误，稍后重试",
+                    event="llm.summarize.retry",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    status=e.status_code,
+                    error={"type": type(e).__name__, "message": str(e)},
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(self._backoff_delay(attempt))
 
             except Exception as e:  # noqa: BLE001
-                logger.exception("LLM summarize unexpected non-retriable error")
+                logger.exception("LLM 未知错误", event="llm.summarize.failed")
                 raise RuntimeError(f"LLM summarize failed: {e}") from e
 
-        logger.error("LLM summarize retries exhausted")
+        logger.error(
+            "LLM 摘要重试耗尽",
+            event="llm.summarize.exhausted",
+            max_retries=self.max_retries,
+        )
         raise RuntimeError(
             f"LLM summarize failed after {self.max_retries} retries: {last_exception}"
         ) from last_exception
@@ -228,7 +241,7 @@ class LLMSummarizer:
                 parts.append(text)
                 yield ("delta", text)
         except Exception as e:  # noqa: BLE001
-            logger.exception("LLM summarize_stream failed")
+            logger.exception("LLM 流式摘要失败", event="llm.stream.failed")
             yield ("error", f"LLM stream failed: {e}")
             return
 

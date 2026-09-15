@@ -79,5 +79,5 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled(_request: Request, exc: Exception):
-        logger.exception("未处理异常")
+        logger.exception("未处理异常", event="http.unhandled_error")
         return _error_json(500, "internal_error", "服务器内部错误")

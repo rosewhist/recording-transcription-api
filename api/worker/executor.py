@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional, Sequence
 from uuid import UUID
 
-from api.core.logger import bind_task_trace, get_logger, trace_id_var
+from api.core.logger import bind_task_id, get_logger, task_id_var
 from api.repository.dao.recording import RecordingDao
 from api.repository.dao.task_types import TaskStatus
 from api.service.summarizer import SummarizerService
@@ -41,23 +41,26 @@ class TaskExecutor:
 
     async def process(self, task_id: UUID) -> None:
         # 优先沿用 dispatcher 传入的 task-*；此处再绑定一次更稳妥。
-        token = bind_task_trace(task_id)
+        token = bind_task_id(task_id)
         t0 = time.perf_counter()
         try:
             async with task_tx(self.db_session_factory) as dao:
                 task = await dao.get_by_id(task_id)
                 if task is None:
-                    logger.warning("[task=%s] 不存在，跳过", task_id)
+                    logger.warning(
+                        "任务不存在，跳过", event="task.skipped", reason="not_found"
+                    )
                     return
                 if (
                     task.status != TaskStatus.TRANSCRIBING.value
                     or task.locked_by != self.worker_id
                 ):
                     logger.warning(
-                        "[task=%s] 状态/租约不符 (status=%s, locked_by=%s)，跳过",
-                        task_id,
-                        task.status,
-                        task.locked_by,
+                        "任务状态/租约不符，跳过",
+                        event="task.skipped",
+                        reason="status_or_lease_mismatch",
+                        status=task.status,
+                        locked_by=task.locked_by,
                     )
                     return
                 recording_id = task.recording_id
@@ -79,10 +82,10 @@ class TaskExecutor:
                             f"Task {task_id} 租约丢失，无法进入 summarizing"
                         )
                 logger.info(
-                    "[task=%s] 状态变更: %s -> %s",
-                    task_id,
-                    TaskStatus.TRANSCRIBING.value,
-                    TaskStatus.SUMMARIZING.value,
+                    "任务状态变更",
+                    event="task.status_changed",
+                    status_from=TaskStatus.TRANSCRIBING.value,
+                    status_to=TaskStatus.SUMMARIZING.value,
                 )
 
                 summary = await self._await_while_leased(
@@ -103,31 +106,28 @@ class TaskExecutor:
 
                 elapsed = time.perf_counter() - t0
                 logger.info(
-                    "[task=%s] 状态变更: %s -> %s",
-                    task_id,
-                    TaskStatus.SUMMARIZING.value,
-                    TaskStatus.DONE.value,
+                    "任务状态变更",
+                    event="task.status_changed",
+                    status_from=TaskStatus.SUMMARIZING.value,
+                    status_to=TaskStatus.DONE.value,
                 )
                 logger.info(
-                    "[task=%s] 任务执行成功，总耗时: %.1fs，状态: %s",
-                    task_id,
-                    elapsed,
-                    TaskStatus.DONE.value,
+                    "任务执行成功",
+                    event="task.done",
+                    status=TaskStatus.DONE.value,
+                    duration_ms=round(elapsed * 1000, 1),
                 )
 
         except asyncio.CancelledError:
-            logger.info("[task=%s] 被取消", task_id)
+            logger.info("任务被取消", event="task.cancelled")
             raise
         except LeaseLostError:
-            logger.warning(
-                "[task=%s] 租约丢失，中止本机处理（由其它实例或回收逻辑接管）",
-                task_id,
-            )
+            logger.warning("租约丢失，中止本机处理", event="task.lease_lost")
         except Exception as e:
-            logger.exception("[task=%s] 处理失败", task_id)
+            logger.exception("任务处理失败", event="task.failed")
             await self._handle_task_failure(task_id, str(e))
         finally:
-            trace_id_var.reset(token)
+            task_id_var.reset(token)
 
     async def reset_aborted(self, task_ids: Sequence[str]) -> None:
         if not task_ids:
@@ -141,8 +141,9 @@ class TaskExecutor:
             )
         if n:
             logger.warning(
-                "优雅关闭超时，重置 %d 个被取消任务回 pending",
-                n,
+                "优雅关闭超时，重置被取消任务回 pending",
+                event="worker.reset_aborted",
+                count=n,
             )
 
     @asynccontextmanager
@@ -150,7 +151,7 @@ class TaskExecutor:
         lease_lost = asyncio.Event()
         if not await self._renew_lease(task_id):
             logger.warning(
-                "[task=%s] 首次续约失败（租约可能已丢失）", task_id
+                "首次续约失败（租约可能已丢失）", event="task.lease_renew_failed"
             )
             lease_lost.set()
             yield lease_lost
@@ -175,7 +176,7 @@ class TaskExecutor:
                 ok = await self._renew_lease(task_id)
                 if not ok:
                     logger.warning(
-                        "[task=%s] 续约失败（租约可能已丢失）", task_id
+                        "续约失败（租约可能已丢失）", event="task.lease_renew_failed"
                     )
                     lease_lost.set()
                     return
@@ -216,7 +217,8 @@ class TaskExecutor:
 
         if row is None:
             logger.warning(
-                "[task=%s] 失败处理未生效（可能已非本 worker 持有）", task_id
+                "失败处理未生效（可能已非本 worker 持有）",
+                event="task.failure_not_applied",
             )
             return
 
@@ -225,24 +227,20 @@ class TaskExecutor:
         if new_status == TaskStatus.PENDING.value:
             delay = 2 ** new_count
             logger.warning(
-                "[task=%s] 状态变更: in_flight -> %s；第 %d/%d 次失败，"
-                "将在 %ds 后重新入队，错误: %s",
-                task_id,
-                TaskStatus.PENDING.value,
-                new_count,
-                max_attempts,
-                delay,
-                (error_msg or "")[:200],
+                "任务失败，将退避后重试",
+                event="task.retry_scheduled",
+                attempt=new_count,
+                max_attempts=max_attempts,
+                delay_seconds=delay,
+                error={"message": (error_msg or "")[:200]},
             )
         else:
             logger.error(
-                "[task=%s] 状态变更: in_flight -> %s；已失败 %d/%d 次，"
-                "重试耗尽，错误: %s",
-                task_id,
-                TaskStatus.FAILED.value,
-                new_count,
-                max_attempts,
-                (error_msg or "")[:500],
+                "任务重试耗尽，标记 failed",
+                event="task.failed",
+                attempt=new_count,
+                max_attempts=max_attempts,
+                error={"message": (error_msg or "")[:500]},
             )
 
     async def _renew_lease(self, task_id: UUID) -> bool:
@@ -270,13 +268,15 @@ class TaskExecutor:
         if self.summarizer is not None:
             result = await self.summarizer.summarize(transcript)
             logger.info(
-                "[task=%s] LLM 摘要生成成功，耗时: %.1fs",
-                task_id,
-                time.perf_counter() - t0,
+                "LLM 摘要生成成功",
+                event="llm.summarize.done",
+                duration_ms=round((time.perf_counter() - t0) * 1000, 1),
             )
             return result
         if self.allow_mock_llm:
-            logger.warning("WORKER_ALLOW_MOCK_LLM=true，使用占位摘要 [task=%s]", task_id)
+            logger.warning(
+                "使用占位摘要（WORKER_ALLOW_MOCK_LLM=true）", event="llm.summarize.mock"
+            )
             await asyncio.sleep(0.1)
             result = {
                 "summary": "模拟摘要",
@@ -284,9 +284,9 @@ class TaskExecutor:
                 "todos": ["待办1"],
             }
             logger.info(
-                "[task=%s] LLM 占位摘要生成成功，耗时: %.1fs",
-                task_id,
-                time.perf_counter() - t0,
+                "LLM 占位摘要生成成功",
+                event="llm.summarize.mock.done",
+                duration_ms=round((time.perf_counter() - t0) * 1000, 1),
             )
             return result
         raise RuntimeError(

@@ -66,10 +66,10 @@ class TranscriberService:
         transcript = _pick_transcript(file_path=file_path, task_id=task_id)
         elapsed = time.perf_counter() - t0
         logger.info(
-            "[task=%s] ASR 转写完成，file=%s，文本长度: %d 字，耗时: %.1fs",
-            task_id if task_id is not None else "-",
-            file_path,
-            len(transcript),
-            elapsed,
+            "ASR 转写完成",
+            event="asr.completed",
+            file_path=file_path,
+            transcript_chars=len(transcript),
+            duration_ms=round(elapsed * 1000, 1),
         )
         return transcript
