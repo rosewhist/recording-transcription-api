@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     WORKER_POLL_IDLE_SECONDS: float = 1.0
     WORKER_ALLOW_MOCK_LLM: bool = False
     WORKER_ID: Optional[str] = None
+    # 持久化 worker 标识（重启复用，使“重置自身锁”立即生效）
+    WORKER_STATE_DIR: str = str(_ROOT / ".worker")
 
     model_config = SettingsConfigDict(
         env_file=_ROOT / ".env",

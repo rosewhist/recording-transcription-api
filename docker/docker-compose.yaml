@@ -47,9 +47,11 @@ services:
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db:5432/recording_transcription"
       UPLOAD_DIR: "/app/uploads"
       LOG_DIR: "/app/logs"
+      WORKER_STATE_DIR: "/app/.worker"
     volumes:
       - ../uploads:/app/uploads
       - ../logs:/app/logs
+      - ../.worker:/app/.worker
     healthcheck:
       test:
         [

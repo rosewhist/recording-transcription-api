@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from typing import Optional
 from uuid import UUID
 
@@ -13,6 +12,7 @@ from api.service.summarizer import SummarizerService
 from api.service.transcriber import TranscriberService
 from api.worker.dispatcher import TaskDispatcher
 from api.worker.executor import TaskExecutor
+from api.worker.identity import resolve_worker_id
 
 logger = get_logger(__name__)
 
@@ -59,7 +59,7 @@ class TaskWorker:
         self.allow_mock_llm = (
             allow_mock_llm if allow_mock_llm is not None else s.WORKER_ALLOW_MOCK_LLM
         )
-        self.worker_id = worker_id or s.WORKER_ID or f"worker-{uuid.uuid4().hex[:8]}"
+        self.worker_id = worker_id or resolve_worker_id(s)
         lease_renew_interval = max(5.0, self.lease_seconds / 3.0)
         reclaim_interval = max(30.0, self.lease_seconds / 2.0)
 

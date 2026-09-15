@@ -76,9 +76,11 @@ python -m pytest -v
 
 **未完成任务如何恢复**：
 
-- 启动时：重置本 `worker_id` 仍持有的、或 `lease_expires_at` 已过期的 in-flight 任务为 `pending`
+- 启动时：重置本 `worker_id` 仍持有的、或 `lease_expires_at` 已过期的 in-flight 任务为 `pending`。`worker_id` 默认持久化到 `WORKER_STATE_DIR/worker_id`（容器内 bind-mount `.worker/`），**重启后复用同一标识**，因此本实例中断的任务可立即回收，无需等租约过期；显式设置 `WORKER_ID` 则完全固定
 - 运行中：按约 `max(30s, lease/2)` 周期回收**过期租约**（多副本下无需等对端重启）
 - 长任务期间周期性续约；续约失败则中止本机处理，避免与回收方双写
+
+> **多副本部署注意**：持久化的 `worker_id` 存放在共享的 `WORKER_STATE_DIR` 中。若运行多个副本（如 `--scale`），每个副本必须显式设置**不同的** `WORKER_ID`，或为每副本挂载独立的 state 目录——否则所有副本会复用同一标识，启动时会把彼此正在处理的任务误判为“自身任务”而重置，导致重复处理。
 
 ## 表结构（Alembic）
 
@@ -158,6 +160,7 @@ data: {"message":"..."}
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 摘要模型；**有 Key 即走真实 LLM** |
 | `WORKER_ALLOW_MOCK_LLM` | 仅无 Key 时的占位摘要（含 SSE mock 流）；有 Key 时 worker 仍用真实模型 |
 | `WORKER_MAX_CONCURRENCY` / `WORKER_LEASE_SECONDS` | 并发与租约 |
+| `WORKER_ID` / `WORKER_STATE_DIR` | worker 标识：显式固定，或持久化到 `WORKER_STATE_DIR`（默认 `.worker/`）以便重启复用 |
 | `LOG_JSON` / `LOG_LEVEL` | 日志 |
 
 ## 已知问题与未完成项
