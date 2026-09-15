@@ -41,12 +41,27 @@ alembic upgrade head
 uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-单元测试（HTTP 接口 + 状态机 / Worker，不连真实 DB / LLM）：
+单元测试（HTTP 接口 + 状态机 / Worker，不连真实 DB / LLM，默认全离线）：
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -v
 ```
+
+集成测试（真实 PostgreSQL，验证 SQL 语义：`SKIP LOCKED` 抢占、退避数值、租约回收
+过滤、同哈希竞态）。**未提供 `TEST_DATABASE_URL` 时整组自动 skip**，不影响上面的离线
+套件：
+
+```bash
+# 起一个临时实例（或直接用 compose 的 db）
+docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/recording_transcription_test \
+  python -m pytest tests/integration -v
+```
+
+测试库会被自动创建（库名必须含 `test`，否则拒绝执行——teardown 会 `downgrade base`
+清空所有表），schema 由 Alembic 迁移建立，因此迁移的 up/down 路径也一并被覆盖。
 
 接口调试：导入根目录 [`api.http`](api.http)，上传样例为 [`testdata/short.wav`](testdata/short.wav)。
 
@@ -138,7 +153,7 @@ data: {"message":"..."}
 - **上传幂等**：基于文件 SHA-256 去重。
 - **上传落盘**：按 1MiB 分块流式写盘并增量计算 SHA-256，阻塞 I/O 走 `asyncio.to_thread`，避免整文件读入内存；幂等命中直接丢弃 `.part` 暂存件。
 - **日志**：loguru 原生 + 扁平结构化单行 JSON（`LOG_JSON=false` 时为彩色文本）。每条含 `ts/level/logger/event/message`、进程级 `instance_id`（每条都有）与链路标识 `request_id`/`task_id`/`recording_id`/`worker_id`（`worker_id` 仅在处理任务时有值）；域字段归入 `extra`，异常归入 `error`。按 `task_id` 字段可一次捞出任务全生命周期，按 `instance_id` 可定位到具体实例。标准库 logging（uvicorn / sqlalchemy / openai）经 `InterceptHandler` 转发到同一 schema。
-- **测试**：`tests/` 覆盖核心 HTTP 接口（mock 仓储）以及 Worker 状态机（mock ASR/LLM，不等待 5~15s）。
+- **测试**：`tests/` 覆盖核心 HTTP 接口（mock 仓储）、Worker 状态机与失败/竞态路径（mock ASR/LLM，不等待 5~15s），默认离线可跑；`tests/integration/` 另有一组真实 PostgreSQL 集成测试，覆盖 SQL 层语义（`SKIP LOCKED` 并发抢占、重试退避数值、租约回收过滤、fencing 守卫、同哈希竞态），未配置 `TEST_DATABASE_URL` 时自动 skip。
 
 ## 已完成的加分项
 
@@ -183,7 +198,8 @@ api/
   worker/             # dispatcher / executor / common
   core/               # db / logger / llm / errors
   schema/             # 响应模型
-tests/                # pytest 单元测试（接口 + 状态机）
+tests/                # pytest 离线单元测试（接口 + 状态机 + 失败/竞态路径）
+tests/integration/    # 真实 PostgreSQL 集成测试（SQL 语义；无库时自动 skip）
 testdata/short.wav    # api.http 上传样例
 alembic/              # 迁移
 docker/               # compose
